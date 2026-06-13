@@ -8,7 +8,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-
+from app.middleware.csrf import CSRFMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
+   
 from app.api import router as api_router
 from app.db.init_db import init_db
 
@@ -98,7 +100,9 @@ async def unhandled_exception_handler(
 
 
 # API Routes
-app.include_router(api_router)
+app.include_router(api_router, prefix="/api")
+app.add_middleware(CSRFMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Health Check
 @app.get(

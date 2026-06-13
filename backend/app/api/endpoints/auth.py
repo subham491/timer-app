@@ -1,97 +1,85 @@
-"""
-Auth endpoints — ADR-006 & ADR-007 compliant.
+"""Auth endpoints — BFF + Redis sessions + CSRF."""
 
-POST /auth/login/microsoft  – SSO login (only sign-in path)
-POST /auth/logout           – record logout, invalidate client-side session
-GET  /auth/me               – return authenticated user profile
+import json
 
-Removed per ADR-006:
-  POST /auth/register  (users are pre-created by Administrator only)
-  POST /auth/login     (local email/password login removed)
-"""
-
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.api.deps import CurrentUser
+from app.config import settings
 from app.db.connection import DBSession
-from app.models import DevTokenResponse, MessageResponse, TokenResponse
-from app.services import auth_service
-from pydantic import BaseModel
+from app.services import auth_service, bff_auth_service, session_store
 
 router = APIRouter()
 
-
-class MicrosoftLoginRequest(BaseModel):
-    microsoft_token: str
+_FLOW_COOKIE = "auth_flow"
 
 
-class LocalLoginRequest(BaseModel):
-    email: str
-    password: str
+def _set_auth_cookies(response: Response, session_id: str, csrf_token: str) -> None:
+    common = dict(max_age=settings.SESSION_TTL_SECONDS, secure=settings.COOKIE_SECURE,
+                  samesite="lax", path="/")
+    response.set_cookie(settings.SESSION_COOKIE_NAME, session_id, httponly=True, **common)
+    response.set_cookie(settings.CSRF_COOKIE_NAME, csrf_token, httponly=False, **common)
 
 
-@router.post("/login/microsoft", response_model=TokenResponse)
-def microsoft_login(body: MicrosoftLoginRequest, request: Request, db: DBSession):
-    """
-    Sign in with Microsoft SSO.
+def _clear_auth_cookies(response: Response) -> None:
+    response.delete_cookie(settings.SESSION_COOKIE_NAME, path="/")
+    response.delete_cookie(settings.CSRF_COOKIE_NAME, path="/")
 
-    The frontend uses MSAL to authenticate with Microsoft and receives a
-    Microsoft ID token. That token is passed here. The backend validates it,
-    finds the pre-provisioned user record, issues a Soliton JWT, and returns it.
 
-    On first sign-in, the user's microsoft_oid is bound to their record.
-    All subsequent sign-ins look up by microsoft_oid, not email.
-    """
-    ip_address = request.client.host if request.client else None
-    return auth_service.microsoft_login(
-        db,
-        microsoft_token=body.microsoft_token,
-        ip_address=ip_address,
+def _start_session_and_redirect(user) -> RedirectResponse:
+    session_id, csrf_token = session_store.create_session(
+        user_id=user.user_id, universal_id=user.universal_id
     )
+    response = RedirectResponse(settings.POST_LOGIN_PATH, status_code=status.HTTP_302_FOUND)
+    _set_auth_cookies(response, session_id, csrf_token)
+    return response
 
 
-@router.post("/login", response_model=DevTokenResponse)
-def login(body: LocalLoginRequest, request: Request, db: DBSession):
+@router.get("/login")
+def login() -> RedirectResponse:
+    flow = bff_auth_service.build_auth_code_flow()
+    response = RedirectResponse(flow["auth_uri"], status_code=status.HTTP_302_FOUND)
+    response.set_cookie(_FLOW_COOKIE, json.dumps(flow), httponly=True,
+                        secure=settings.COOKIE_SECURE, samesite="lax", max_age=300, path="/")
+    return response
+
+
+@router.get("/callback")
+def callback(request: Request, db: DBSession) -> RedirectResponse:
+    raw_flow = request.cookies.get(_FLOW_COOKIE)
+    if not raw_flow:
+        raise HTTPException(status_code=400, detail="Sign-in session expired. Please try again.")
+    claims = bff_auth_service.redeem_auth_code(json.loads(raw_flow), dict(request.query_params))
     ip_address = request.client.host if request.client else None
-    return auth_service.local_login(
-        db,
-        email=body.email,
-        password=body.password,
-        ip_address=ip_address,
-    )
+    user = auth_service.establish_user_from_claims(db, claims=claims, ip_address=ip_address)
+    response = _start_session_and_redirect(user)
+    response.delete_cookie(_FLOW_COOKIE, path="/")
+    return response
 
 
-@router.post("/dev-login", response_model=DevTokenResponse)
-def dev_login(db: DBSession):
-    """
-    Development-only login that returns a real backend JWT for an existing
-    active administrator or manager user.
-    """
-    return auth_service.dev_login(db)
+@router.get("/dev-login")
+def dev_login(db: DBSession) -> RedirectResponse:
+    user = auth_service.get_dev_user(db)  # raises 404 in production
+    return _start_session_and_redirect(user)
 
 
-@router.post("/logout", response_model=MessageResponse)
-def logout(request: Request, db: DBSession, user: CurrentUser):
-    """
-    Record the logout event in auth_logs.
-    The session is invalidated immediately on the client side.
-    Per ADR-006, sign-out never makes the user wait.
-    """
+@router.post("/logout")
+def logout(request: Request, db: DBSession, user: CurrentUser) -> JSONResponse:
+    session_store.delete_session(user["session_id"])
     ip_address = request.client.host if request.client else None
     auth_service.logout(db, user_id=user["user_id"], ip_address=ip_address)
-    return {"message": "Logged out successfully."}
+    response = JSONResponse({"message": "Logged out successfully."})
+    _clear_auth_cookies(response)
+    return response
 
 
 @router.get("/me")
-def get_profile(user: CurrentUser):
-    """
-    Return the profile of the currently authenticated user.
-    microsoft_oid is never returned per ADR-006.
-    """
+def get_profile(user: CurrentUser) -> dict:
     return {
-        "user_id":      user["user_id"],
+        "id": str(user["user_id"]),
         "universal_id": user["universal_id"],
-        "display_name": user["display_name"],
-        "email":        user["email"],
-        "role_id":      user["role_id"],
+        "email": user["email"],
+        "name": user["display_name"],
+        "role": auth_service._role_name_for_frontend(user["role_id"]),
     }

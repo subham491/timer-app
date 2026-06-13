@@ -13,8 +13,5 @@ export interface AuthUser {
 
 export interface AuthState {
   isAuthenticated: boolean;
-
-  token: string | null;
-
   user: AuthUser | null;
 }

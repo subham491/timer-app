@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet } from 'react-router-dom';
 
 import AccessTimeRoundedIcon from '@mui/icons-material/AccessTimeRounded';
 import AnalyticsRoundedIcon from '@mui/icons-material/AnalyticsRounded';
@@ -27,8 +27,8 @@ import { alpha, useTheme } from '@mui/material/styles';
 import { useQueryClient } from '@tanstack/react-query';
 
 import ThemeToggle from '@/shared/components/navigation/ThemeToggle';
-import { useAppDispatch, useAppSelector } from '@/store/hooks';
-import { logout } from '@/store/slices/auth/authSlice';
+import { useAppSelector } from '@/store/hooks';
+import { logout } from '@/features/auth/api/auth.api';
 import { selectAuthUser } from '@/store/slices/auth/authSelectors';
 
 const drawerWidth = 220;
@@ -58,9 +58,7 @@ const navigationItems = [
 
 const DashboardLayout = () => {
   const theme = useTheme();
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const dispatch = useAppDispatch();
   const authUser = useAppSelector(selectAuthUser);
   const isDesktop = useMediaQuery(theme.breakpoints.up('lg'));
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -68,9 +66,8 @@ const DashboardLayout = () => {
   const visibleNavigationItems = navigationItems;
 
   const handleLogout = async () => {
-    dispatch(logout());
     queryClient.clear();
-    navigate('/login', { replace: true });
+    await logout(); // POSTs /api/auth/logout (revokes the Redis session), then redirects to /login
   };
 
   const drawerContent = (

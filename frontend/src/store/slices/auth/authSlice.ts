@@ -1,54 +1,27 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 
-import { clearPersistedAuthState, loadPersistedAuthState, persistAuthState } from './authStorage';
-import { type AuthState } from './auth.types';
+import type { AuthState, AuthUser } from './auth.types';
 
-const defaultState: AuthState = {
+const initialState: AuthState = {
   isAuthenticated: false,
-  token: null,
   user: null,
 };
 
-const initialState: AuthState = loadPersistedAuthState() ?? defaultState;
-
 const authSlice = createSlice({
   name: 'auth',
-
   initialState,
-
   reducers: {
-    loginSuccess: (
-      state,
-      action: PayloadAction<{
-        token: string;
-        user: AuthState['user'];
-      }>
-    ) => {
+    setUser: (state, action: PayloadAction<AuthUser>) => {
       state.isAuthenticated = true;
-
-      state.token = action.payload.token;
-
-      state.user = action.payload.user;
-
-      persistAuthState({
-        token: state.token,
-        user: state.user,
-      });
+      state.user = action.payload;
     },
-
-    logout: (state) => {
+    clearUser: (state) => {
       state.isAuthenticated = false;
-
-      state.token = null;
-
       state.user = null;
-
-      clearPersistedAuthState();
     },
   },
 });
 
-export const { loginSuccess, logout } =
-  authSlice.actions;
+export const { setUser, clearUser } = authSlice.actions;
 
 export default authSlice.reducer;

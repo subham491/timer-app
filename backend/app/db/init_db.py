@@ -37,49 +37,31 @@ def _ensure_users_mvp_columns() -> None:
     alter_statements: list[str] = []
 
     if "microsoft_oid" not in existing_columns:
-        alter_statements.append(
-            "ALTER TABLE users ADD COLUMN microsoft_oid TEXT"
-        )
-
+        alter_statements.append("ALTER TABLE users ADD COLUMN microsoft_oid TEXT")
     if "role_id" not in existing_columns:
-        alter_statements.append(
-            "ALTER TABLE users ADD COLUMN role_id INTEGER NOT NULL DEFAULT 1"
-        )
-
+        alter_statements.append("ALTER TABLE users ADD COLUMN role_id INTEGER NOT NULL DEFAULT 1")
     if "role" not in existing_columns:
-        alter_statements.append(
-            "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'"
-        )
-
+        alter_statements.append("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
     if "manager_id" not in existing_columns:
-        alter_statements.append(
-            "ALTER TABLE users ADD COLUMN manager_id INTEGER"
-        )
-
+        alter_statements.append("ALTER TABLE users ADD COLUMN manager_id INTEGER")
     if "status" not in existing_columns:
-        alter_statements.append(
-            "ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
-        )
-
+        alter_statements.append("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
     if "is_active" not in existing_columns:
-        alter_statements.append(
-            "ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT true"
-        )
-
+        alter_statements.append("ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT true")
     if "created_by" not in existing_columns:
-        alter_statements.append(
-            "ALTER TABLE users ADD COLUMN created_by INTEGER"
-        )
-
+        alter_statements.append("ALTER TABLE users ADD COLUMN created_by INTEGER")
     if "updated_by" not in existing_columns:
-        alter_statements.append(
-            "ALTER TABLE users ADD COLUMN updated_by INTEGER"
-        )
-
+        alter_statements.append("ALTER TABLE users ADD COLUMN updated_by INTEGER")
     if "deleted_at" not in existing_columns:
-        alter_statements.append(
-            "ALTER TABLE users ADD COLUMN deleted_at TIMESTAMP"
-        )
+        alter_statements.append("ALTER TABLE users ADD COLUMN deleted_at TIMESTAMP")
+
+    # Only backfill from the legacy column when it actually exists (old prototype
+    # DBs). Fresh databases never had `microsoft_userid`, so skip that line.
+    oid_backfill = (
+        "microsoft_oid = COALESCE(microsoft_oid, microsoft_userid),"
+        if "microsoft_userid" in existing_columns
+        else ""
+    )
 
     with engine.begin() as connection:
         for statement in alter_statements:
@@ -87,10 +69,10 @@ def _ensure_users_mvp_columns() -> None:
 
         connection.execute(
             text(
-                """
+                f"""
                 UPDATE users
                 SET
-                    microsoft_oid = COALESCE(microsoft_oid, microsoft_userid),
+                    {oid_backfill}
                     role_id = COALESCE(
                         NULLIF(role_id, 0),
                         CASE LOWER(COALESCE(role, 'user'))
@@ -129,7 +111,6 @@ def _ensure_users_mvp_columns() -> None:
                 """
             )
         )
-
 
 def _ensure_time_entries_mvp_columns() -> None:
     """Apply additive MVP schema changes for existing time_entries tables."""

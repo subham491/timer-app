@@ -1,17 +1,25 @@
-import {type PropsWithChildren } from 'react';
+import { useEffect, useState, type PropsWithChildren } from 'react';
+import { useAppDispatch } from '@/store/hooks';
+import { clearUser, setUser } from '@/store/slices/auth/authSlice';
+import { fetchMe } from '@/features/auth/api/auth.api';
 
-import { MsalProvider } from '@azure/msal-react';
+const AuthProvider = ({ children }: PropsWithChildren) => {
+  const dispatch = useAppDispatch();
+  const [ready, setReady] = useState(false);
 
-import { msalInstance } from '@/shared/lib/msal';
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      const user = await fetchMe();
+      if (!active) return;
+      dispatch(user ? setUser(user) : clearUser());
+      setReady(true);
+    })();
+    return () => { active = false; };
+  }, [dispatch]);
 
-const AuthProvider = ({
-  children,
-}: PropsWithChildren) => {
-  return (
-    <MsalProvider instance={msalInstance}>
-      {children}
-    </MsalProvider>
-  );
+  if (!ready) return null;
+  return <>{children}</>;
 };
 
 export default AuthProvider;

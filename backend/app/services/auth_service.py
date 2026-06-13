@@ -368,3 +368,51 @@ def _role_name_for_frontend(role_id: int) -> str:
         3: "manager",
         4: "administrator",
     }.get(role_id, "regularUser")
+
+def establish_user_from_claims(db: Session, *, claims: dict, ip_address: Optional[str] = None):
+    if claims.get("tid", "") != MICROSOFT_TENANT_ID:
+        write_auth_log(db, event_type="sso_login_failure", auth_provider="microsoft",
+                       ip_address=ip_address, failure_reason="sso_tenant_mismatch")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="This Microsoft account does not belong to the Soliton tenant.")
+
+    microsoft_oid = claims.get("oid", "")
+    email = claims.get("preferred_username", "") or claims.get("email", "")
+    display_name = claims.get("name", "")
+
+    user = user_repo.get_user_by_microsoft_oid(db, microsoft_oid)
+    if not user:
+        user = user_repo.get_user_by_email_for_sso(db, email)
+        if not user:
+            write_auth_log(db, event_type="sso_login_failure", auth_provider="microsoft",
+                           ip_address=ip_address, failure_reason="unknown_user")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="Your account isn't enabled. Contact your administrator.")
+        user_repo.bind_microsoft_oid(db, user.user_id, microsoft_oid)
+        if display_name and display_name != user.display_name:
+            user_repo.update_user(db, user.user_id, updated_by=user.user_id, display_name=display_name)
+
+    if user.status != "active":
+        write_auth_log(db, event_type="sso_login_failure", user_id=user.user_id,
+                       auth_provider="microsoft", ip_address=ip_address, failure_reason="account_archived")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="This account has been archived. Contact your administrator.")
+
+    user_repo.update_last_login(db, user.user_id)
+    write_auth_log(db, event_type="sso_login_success", user_id=user.user_id,
+                   auth_provider="microsoft", ip_address=ip_address)
+    return user
+
+
+def get_dev_user(db: Session):
+    if not is_dev_login_enabled():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Development auth endpoint is not available.")
+    active_users = [u for u in user_repo.get_all_users(db) if u.status == "active"]
+    if not active_users:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Development auth requires an existing active user. Seed one first.")
+    user = next((u for u in active_users if u.role_id == ADMINISTRATOR_ROLE_ID),
+                next((u for u in active_users if u.role_id == MANAGER_ROLE_ID), active_users[0]))
+    user_repo.update_last_login(db, user.user_id)
+    return user

@@ -48,4 +48,3 @@ def create_assignment(body: AssignmentCreateRequest, db: DBSession, user: Curren
 def update_assignment(assignment_id: int, body: AssignmentUpdateRequest, db: DBSession, user: CurrentUser):
     """Update assignment status to active or inactive."""
     return assignment_service.update_assignment(db, assignment_id, body.status, updated_by=user["user_id"])
-
