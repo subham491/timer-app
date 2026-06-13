@@ -1,4 +1,4 @@
-import { store } from '@/store/store';
+import { apiClient } from '@/shared/lib/apiClient';
 
 import type {
   UserFormDraft,
@@ -6,10 +6,6 @@ import type {
   UserReference,
   UserRoleOption,
 } from '@/features/users/types/usersPage.types';
-
-const API_BASE_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ??
-  'http://localhost:8000/api/v1';
 
 interface BackendUserRoleOption {
   id: number;
@@ -86,99 +82,23 @@ const mapUserRecord = (user: BackendUserRecord): UserRecord => ({
   deletedAt: user.deletedAt,
 });
 
-const getAuthHeaders = () => {
-  const token = store.getState().auth.token;
-
-  return token
-    ? {
-        Authorization: `Bearer ${token}`,
-      }
-    : undefined;
-};
-
-const getErrorMessage = async (response: Response) => {
-  try {
-    const errorBody = (await response.json()) as { detail?: string };
-    if (typeof errorBody.detail === 'string' && errorBody.detail.length > 0) {
-      return errorBody.detail;
-    }
-  } catch {
-    // Fall back to the generic HTTP status message.
-  }
-
-  return `Backend request failed with status ${response.status}`;
-};
-
 const getJson = async <TBody>(path: string): Promise<TBody> => {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: {
-      Accept: 'application/json',
-      ...getAuthHeaders(),
-    },
-    method: 'GET',
-  });
-
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response));
-  }
-
-  return (await response.json()) as TBody;
+  const { data } = await apiClient.get<TBody>(path);
+  return data;
 };
 
-const postJson = async <TBodyResponse, TBodyRequest>(
-  path: string,
-  body: TBodyRequest
-): Promise<TBodyResponse> => {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    body: JSON.stringify(body),
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      ...getAuthHeaders(),
-    },
-    method: 'POST',
-  });
-
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response));
-  }
-
-  return (await response.json()) as TBodyResponse;
+const postJson = async <TRes, TReq>(path: string, body: TReq): Promise<TRes> => {
+  const { data } = await apiClient.post<TRes>(path, body);
+  return data;
 };
 
-const patchJson = async <TBodyResponse, TBodyRequest>(
-  path: string,
-  body: TBodyRequest
-): Promise<TBodyResponse> => {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    body: JSON.stringify(body),
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      ...getAuthHeaders(),
-    },
-    method: 'PATCH',
-  });
-
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response));
-  }
-
-  return (await response.json()) as TBodyResponse;
+const patchJson = async <TRes, TReq>(path: string, body: TReq): Promise<TRes> => {
+  const { data } = await apiClient.patch<TRes>(path, body);
+  return data;
 };
 
 const deleteJson = async (path: string): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: {
-      Accept: 'application/json',
-      ...getAuthHeaders(),
-    },
-    method: 'DELETE',
-  });
-
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response));
-  }
+  await apiClient.delete(path);
 };
 
 const toCreatePayload = (draft: UserFormDraft): CreateUserRequest => ({

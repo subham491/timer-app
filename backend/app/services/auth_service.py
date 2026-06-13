@@ -416,3 +416,38 @@ def get_dev_user(db: Session):
                 next((u for u in active_users if u.role_id == MANAGER_ROLE_ID), active_users[0]))
     user_repo.update_last_login(db, user.user_id)
     return user
+
+def list_dev_users(db: Session) -> list[dict]:
+    """Dev-only: list active users for the switcher. 404 in production."""
+    if not is_dev_login_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Development auth endpoint is not available.",
+        )
+    return [
+        {
+            "user_id": u.user_id,
+            "display_name": u.display_name,
+            "email": u.email,
+            "role": _role_name_for_frontend(u.role_id),
+        }
+        for u in user_repo.get_all_users(db)
+        if u.status == "active"
+    ]
+
+
+def get_dev_user_by_id(db: Session, user_id: int):
+    """Dev-only: resolve a specific active user to log in as. 404 in production."""
+    if not is_dev_login_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Development auth endpoint is not available.",
+        )
+    user = user_repo.get_user_by_id(db, user_id)
+    if not user or user.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found or not active.",
+        )
+    user_repo.update_last_login(db, user.user_id)
+    return user

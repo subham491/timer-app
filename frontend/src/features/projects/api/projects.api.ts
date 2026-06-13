@@ -4,11 +4,8 @@ import type {
   ProjectTaskReference,
   ProjectUserReference,
 } from '@/store/slices/projects/projects.types';
-import { store } from '@/store/store';
 
-const API_BASE_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ??
-  'http://localhost:8000/api/v1';
+import { apiClient } from '@/shared/lib/apiClient';
 
 interface BackendProjectUserReference {
   email: string;
@@ -123,72 +120,23 @@ const mergeUsers = (
   );
 };
 
-const getAuthHeaders = () => {
-  const token = store.getState().auth.token;
-
-  return token
-    ? {
-        Authorization: `Bearer ${token}`,
-      }
-    : undefined;
-};
-
 const getJson = async <TBody>(path: string): Promise<TBody> => {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: {
-      Accept: 'application/json',
-      ...getAuthHeaders(),
-    },
-    method: 'GET',
-  });
-
-  if (!response.ok) {
-    throw new Error(`Backend request failed with status ${response.status}`);
-  }
-
-  return (await response.json()) as TBody;
+  const { data } = await apiClient.get<TBody>(path);
+  return data;
 };
 
-const postJson = async <TBodyResponse, TBodyRequest>(
-  path: string,
-  body: TBodyRequest
-): Promise<TBodyResponse> => {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    body: JSON.stringify(body),
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      ...getAuthHeaders(),
-    },
-    method: 'POST',
-  });
-
-  if (!response.ok) {
-    throw new Error(`Backend request failed with status ${response.status}`);
-  }
-
-  return (await response.json()) as TBodyResponse;
+const postJson = async <TRes, TReq>(path: string, body: TReq): Promise<TRes> => {
+  const { data } = await apiClient.post<TRes>(path, body);
+  return data;
 };
 
-const patchJson = async <TBodyResponse, TBodyRequest>(
-  path: string,
-  body: TBodyRequest
-): Promise<TBodyResponse> => {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    body: JSON.stringify(body),
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      ...getAuthHeaders(),
-    },
-    method: 'PATCH',
-  });
+const patchJson = async <TRes, TReq>(path: string, body: TReq): Promise<TRes> => {
+  const { data } = await apiClient.patch<TRes>(path, body);
+  return data;
+};
 
-  if (!response.ok) {
-    throw new Error(`Backend request failed with status ${response.status}`);
-  }
-
-  return (await response.json()) as TBodyResponse;
+const deleteJson = async (path: string): Promise<void> => {
+  await apiClient.delete(path);
 };
 
 const buildProjectMutationPayload = (

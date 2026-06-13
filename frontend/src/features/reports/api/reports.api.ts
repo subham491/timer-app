@@ -1,28 +1,8 @@
-import { store } from '@/store/store';
-
-const API_BASE_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ??
-  'http://localhost:8000/api/v1';
-
-const getAuthHeaders = () => {
-  const token = store.getState().auth.token;
-  return token ? { Authorization: `Bearer ${token}` } : undefined;
-};
+import { apiClient } from '@/shared/lib/apiClient';
 
 const getJson = async <T>(path: string): Promise<T> => {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: { Accept: 'application/json', ...getAuthHeaders() },
-    method: 'GET',
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({})) as { detail?: string };
-    throw new Error(
-      typeof body.detail === 'string'
-        ? body.detail
-        : `Request failed with status ${response.status}`
-    );
-  }
-  return response.json() as Promise<T>;
+  const { data } = await apiClient.get<T>(path);
+  return data;
 };
 
 // The backend uses exclusive end_at < end, so we add one day to include
@@ -95,10 +75,10 @@ export const downloadUserActivityCsv = async (
   startDate: string,
   endDate: string
 ): Promise<void> => {
-  const response = await fetch(
-    `${API_BASE_URL}/reports/user-activity-summary/export?start_date=${startDate}&end_date=${toExclusiveEnd(endDate)}`,
-    { headers: { ...getAuthHeaders() }, method: 'GET' }
-  );
+  const response = await fetch(`/api/reports/.../export?...`, {
+    method: 'GET',
+    credentials: 'include',
+  });
   if (!response.ok) throw new Error('Export failed');
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
@@ -117,10 +97,10 @@ export const downloadTimesheetCsv = async (
   startDate: string,
   endDate: string
 ): Promise<void> => {
-  const response = await fetch(
-    `${API_BASE_URL}/reports/my-timesheet/export?start_date=${startDate}&end_date=${toExclusiveEnd(endDate)}`,
-    { headers: { ...getAuthHeaders() }, method: 'GET' }
-  );
+  const response = await fetch(`/api/reports/.../export?...`, {
+    method: 'GET',
+    credentials: 'include',
+  });
   if (!response.ok) throw new Error('Export failed');
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);

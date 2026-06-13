@@ -13,12 +13,7 @@ import type {
   UserReference,
 } from '@/features/timer/types';
 import { formatDuration } from '@/features/timer/utils';
-import { store } from '@/store/store';
-
-const API_BASE_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ??
-  'http://localhost:8000/api/v1';
-
+import { apiClient } from '@/shared/lib/apiClient';
 interface BackendTimerProjectReference {
   id: string;
   isTimerReady: boolean;
@@ -183,112 +178,26 @@ const mapTimeEntrySummary = (entry: BackendTimerEntry): TimeEntrySummary => {
   };
 };
 
-const getAuthHeaders = () => {
-  const token = store.getState().auth.token;
-
-  return token
-    ? {
-        Authorization: `Bearer ${token}`,
-      }
-    : undefined;
-};
-
-const getErrorMessage = async (response: Response) => {
-  try {
-    const body = (await response.json()) as { detail?: string | { message?: string } };
-
-    if (typeof body.detail === 'string' && body.detail.trim().length > 0) {
-      return body.detail;
-    }
-
-    if (
-      body.detail &&
-      typeof body.detail === 'object' &&
-      typeof body.detail.message === 'string' &&
-      body.detail.message.trim().length > 0
-    ) {
-      return body.detail.message;
-    }
-  } catch {
-    // Fall back to the status-based message below when the response is not JSON.
-  }
-
-  return `Backend request failed with status ${response.status}`;
-};
 
 const getJson = async <TBody>(path: string): Promise<TBody> => {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: {
-      Accept: 'application/json',
-      ...getAuthHeaders(),
-    },
-    method: 'GET',
-  });
-
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response));
-  }
-
-  return (await response.json()) as TBody;
+  const { data } = await apiClient.get<TBody>(path);
+  return data;
 };
 
-const postJson = async <TBodyResponse, TBodyRequest>(
-  path: string,
-  body: TBodyRequest
-): Promise<TBodyResponse> => {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    body: JSON.stringify(body),
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      ...getAuthHeaders(),
-    },
-    method: 'POST',
-  });
-
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response));
-  }
-
-  return (await response.json()) as TBodyResponse;
+const postJson = async <TRes, TReq>(path: string, body: TReq): Promise<TRes> => {
+  const { data } = await apiClient.post<TRes>(path, body);
+  return data;
 };
 
-const patchJson = async <TBodyResponse, TBodyRequest>(
-  path: string,
-  body: TBodyRequest
-): Promise<TBodyResponse> => {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    body: JSON.stringify(body),
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      ...getAuthHeaders(),
-    },
-    method: 'PATCH',
-  });
-
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response));
-  }
-
-  return (await response.json()) as TBodyResponse;
+const patchJson = async <TRes, TReq>(path: string, body: TReq): Promise<TRes> => {
+  const { data } = await apiClient.patch<TRes>(path, body);
+  return data;
 };
 
 const deleteRequest = async (path: string): Promise<null> => {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: {
-      Accept: 'application/json',
-      ...getAuthHeaders(),
-    },
-    method: 'DELETE',
-  });
-
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response));
-  }
-
-  return null;
-};
+    await apiClient.delete(path);
+    return null;
+  };
 
 const getCurrentTimerFromBackend = async (): Promise<CurrentTimerResponse> => {
   const response = await getJson<BackendCurrentTimerResponse>('/timer/current');

@@ -83,3 +83,13 @@ def get_profile(user: CurrentUser) -> dict:
         "name": user["display_name"],
         "role": auth_service._role_name_for_frontend(user["role_id"]),
     }
+
+@router.get("/dev-users")
+def dev_users(db: DBSession) -> list[dict]:
+    return auth_service.list_dev_users(db)
+
+
+@router.get("/dev-login-as")
+def dev_login_as(user_id: int, db: DBSession) -> RedirectResponse:
+    user = auth_service.get_dev_user_by_id(db, user_id)
+    return _start_session_and_redirect(user)    

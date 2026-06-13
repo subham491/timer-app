@@ -8,6 +8,7 @@ import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded';
 import SourceRoundedIcon from '@mui/icons-material/SourceRounded';
 import SupportAgentRoundedIcon from '@mui/icons-material/SupportAgentRounded';
+import DevUserSwitcher from '@/features/auth/components/DevUserSwitcher';
 
 import {
   AppBar,
@@ -300,6 +301,7 @@ const DashboardLayout = () => {
             </Box>
 
             <ThemeToggle />
+            {import.meta.env.DEV && <DevUserSwitcher />}
           </Toolbar>
         </AppBar>
 

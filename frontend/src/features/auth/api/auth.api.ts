@@ -23,5 +23,21 @@ export const logout = async (): Promise<void> => {
   window.location.href = '/login';
 };
 
+export interface DevUser {
+  user_id: number;
+  display_name: string;
+  email: string;
+  role: string;
+}
+
+export const fetchDevUsers = async (): Promise<DevUser[]> => {
+  const { data } = await authClient.get<DevUser[]>('/api/auth/dev-users');
+  return data;
+};
+
+export const devLoginAs = (userId: number): void => {
+  window.location.href = `/api/auth/dev-login-as?user_id=${userId}`;
+};
+
 // Re-export so existing imports of AuthUser from this module keep working.
 export type { AuthUser } from '@/store/slices/auth/auth.types';
