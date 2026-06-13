@@ -39,5 +39,14 @@ export const devLoginAs = (userId: number): void => {
   window.location.href = `/api/auth/dev-login-as?user_id=${userId}`;
 };
 
+export const fetchAuthMode = async (): Promise<{ devLogin: boolean }> => {
+  try {
+    const { data } = await authClient.get<{ devLogin: boolean }>('/api/auth/mode');
+    return data;
+  } catch {
+    return { devLogin: false };   // if unsure, behave like real mode (show the button)
+  }
+};
+
 // Re-export so existing imports of AuthUser from this module keep working.
 export type { AuthUser } from '@/store/slices/auth/auth.types';

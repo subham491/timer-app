@@ -4,8 +4,9 @@
 |---|---|
 | **Status** | Proposed |
 | **Date** | 27-05-2026 |
+| **Revised** | 10-06-2026 |
 | **Deciders** | Subham Panda, Mohammed Siddique M, Aswath Ravi |
-| **Depends on** | ADR-001 (Domain Glossary), ADR-003 (Database Schema) |
+| **Depends on** | ADR-001 (Domain Glossary), ADR-003 (Database Schema), ADR-004 (System Architecture), ADR-011 (Frontend Auth, BFF) |
 | **Superseded by** | None |
 
 ---
@@ -36,7 +37,7 @@ Five top-level modules under `src/`, plus `assets/`. Dependencies flow downward 
 |---|---|---|
 | `src/app/` | Bootstrap, providers, router, layouts. | `features/`, `shared/`, `store/`, `styles/` |
 | `src/features/` | One folder per feature (`auth`, `time-entries`, `tasks`, `projects`, …). | `shared/`, `store/` |
-| `src/shared/` | Axios client, WebSocket client, reusable UI, generic hooks, query keys. | Nothing project-internal |
+| `src/shared/` | Axios client, SSE client, reusable UI, generic hooks, query keys. | Nothing project-internal |
 | `src/store/` | Redux store setup, root reducer, two global slices. | `shared/` (types only) |
 | `src/styles/` | SCSS abstracts, theme tokens, base. | Nothing |
 
@@ -109,7 +110,7 @@ State falls into four categories. Each has exactly one home.
 | Category | Tool | Lives in | Examples |
 |---|---|---|---|
 | **Server state** | TanStack React Query | Query cache (in memory) | `['time-entries','running']`, `['tasks','list']`, `['users','me']` |
-| **Global UI state** | Redux Toolkit | `src/store/slices/` | `auth` (User, scopes, JWT); `ui` (theme, snackbar queue) |
+| **Global UI state** | Redux Toolkit | `src/store/slices/` | `auth` (User, scopes, session state — no token); `ui` (theme, snackbar queue) |
 | **Feature-local UI state** | Redux slice or `useState` | `features/{feature}/state/` or component | Selected Task before start; dialog open; selected row |
 | **Form state** | React Hook Form + Zod | Form component (state); `features/{feature}/validations/` (schema) | Login form; Manual Entry; edit dialog |
 
@@ -140,12 +141,12 @@ The bridge between the module structure (*Module Map*, *Feature Module Shape*, *
 ```
 src/
 ├── store/slices/                  [GLOBAL UI STATE]
-│   ├── authSlice.ts               — User, scopes, JWT
+│   ├── authSlice.ts               — User, scopes, session state (no token)
 │   └── uiSlice.ts                 — theme, snackbar queue
 │
 ├── shared/
-│   ├── api/                       — axios client (REST transport)
-│   ├── ws/                        — WebSocket client (sync transport)
+│   ├── api/                       — axios client (REST transport, cookie + CSRF)
+│   ├── sse/                       — SSE client (sync transport, cookie-authenticated)
 │   └── constants/queryKeys.ts     — addresses, not state
 │
 ├── app/providers/                 [INFRASTRUCTURE]
@@ -164,10 +165,10 @@ src/
 Reading this map for concrete cases:
 
 - A new Time Entry mutation lives in `features/time-entries/hooks/useStartTimer.ts`.
-- The JWT lives in `src/store/slices/authSlice.ts`.
+- The User profile, scopes, and session state live in `src/store/slices/authSlice.ts` — there is no token to store; the session is an httpOnly cookie the app cannot read.
 - The "selected Task before starting a timer" lives in `features/time-entries/state/timerSlice.ts`.
 - The Manual Entry form's validation schema lives in `features/time-entries/validations/manualEntry.schema.ts`.
-- The transport layer (axios, WebSocket) is shared infrastructure, not state.
+- The transport layer (axios, SSE) is shared infrastructure, not state.
 
 ---
 
@@ -189,10 +190,10 @@ main.tsx
 
 Two state-relevant things happen before first paint:
 
-1. **Synchronous read of `localStorage`.** The JWT and theme preference are read in `main.tsx` and used to initialise the `auth` and `ui` slices. The `<html data-theme>` attribute is set before paint to avoid a theme flash.
-2. **Background verification.** After mount, `loadProfile()` calls `GET /auth/me` to verify the stored JWT. On 200, the User's profile and scopes hydrate; the WebSocket connection opens with the verified JWT. On 401, `forceLogout()` clears the slice and redirects to `/login`.
+1. **Synchronous read of `localStorage` — theme only.** The theme preference is read in `main.tsx` to initialise the `ui` slice, and the `<html data-theme>` attribute is set before paint to avoid a theme flash. There is no token to read: the session is an httpOnly cookie the app cannot access, so the `auth` slice initialises to the `checking` state and is resolved by the backend, not by client storage.
+2. **Session verification.** After mount, `loadProfile()` calls `GET /auth/me`; the session cookie rides along automatically. On 200, the User's profile and scopes hydrate and the slice moves to `signed_in`; the SSE connection opens (also cookie-authenticated). On 401, `forceSignOut()` resets the slice to `signed_out` and redirects to `/login`.
 
-Only two pieces of state survive a reload: the JWT and the theme. The Query cache starts empty on every page load.
+Only one piece of state survives a reload in client storage: the theme. The auth session lives in the cookie (opaque to the app) and is re-verified every load; the Query cache starts empty on every page load.
 
 ---
 
@@ -212,21 +213,21 @@ The canonical mutation flow, illustrated with starting a Running Timer.
 
 ---
 
-## Real-Time Sync (WebSocket)
+## Real-Time Sync (SSE)
 
-State changes in one client need to appear in every other client logged into the same User account. The transport is a one-way server-push WebSocket, opened after `/auth/me` returns 200 (see *Bootstrap & Provider Chain*).
+State changes in one client need to appear in every other client logged into the same User account. The transport is a one-way server-push **Server-Sent Events (SSE)** stream, opened with `EventSource` after `/auth/me` returns 200 (see *Bootstrap & Provider Chain*). The stream's GET carries the session cookie automatically, so it authenticates exactly like every other request — no token in the URL, no separate handshake.
 
-![WebSocket sync across tabs and devices](../diagrams/websocket-sync.png)
+![SSE sync across tabs and devices](../diagrams/sse-sync.png)
 
 1. The User stops the Running Timer in Tab A. The mutation hits `POST /time-entries/{id}/stop`.
-2. The backend writes the row, then publishes a domain event onto the WebSocket hub.
-3. The hub fans out the event to every connected client whose scopes match — Tab A's own socket included.
-4. In parallel, Tab A's local `onSuccess` invalidates immediately (fast path). The WebSocket echo arrives later and is a no-op because the cache is already fresh.
+2. The backend writes the row, then publishes a domain event onto the SSE hub.
+3. The hub fans out the event to every connected stream for that User — Tab A's own stream included.
+4. In parallel, Tab A's local `onSuccess` invalidates immediately (fast path). The SSE echo arrives later and is a no-op because the cache is already fresh.
 5. Tab B (same browser) and Device 2 (different browser/laptop) receive the same event. Their handler invokes `qc.invalidateQueries(['time-entries'])` and dependent keys. Refetches fire and subscribers re-render.
 
 The receiver never trusts the event payload — it invalidates and refetches. The backend stays the source of truth; the event is a hint.
 
-Connection state surfaces in the UI: a green **Live** dot when connected, an amber **Reconnecting…** banner during exponential backoff. On reconnect, a single sweep `qc.invalidateQueries()` refreshes anything that may have changed during the gap.
+`EventSource` reconnects automatically, so the client carries no backoff logic of its own. Connection state still surfaces in the UI: a green **Live** dot when connected, an amber **Reconnecting…** banner while `EventSource` is retrying. On reconnect, a single sweep `qc.invalidateQueries()` refreshes anything that may have changed during the gap. If the session has expired or been revoked while the stream was open, the backend closes it; the reconnect attempt resolves to a 401 and the app forces sign-out — the stream is never an independent auth path.
 
 ---
 
@@ -306,5 +307,16 @@ These are forbidden. ESLint catches some; code review catches the rest.
 
 - **ADR-001** — Domain Glossary & Access Control Policy (canonical terminology, RBAC, report catalogue)
 - **ADR-003** — Database Schema V2 (`duration_seconds` server-computed; `start_at` / `end_at` as source of truth)
+- **ADR-004** — System Architecture (BFF model, cookie session, SSE channel)
+- **ADR-011** — Frontend Authentication Implementation (BFF) — the auth vertical this architecture hosts
 - TanStack Query — `invalidateQueries`, `setQueryData`, query key semantics
 - React Hook Form — `setError`, `handleSubmit`
+
+---
+
+## Change Log
+
+| Date | Change |
+|---|---|
+| 27-05-2026 | Initial version: feature-based module architecture and four-category state model. |
+| 10-06-2026 | BFF authentication revision. The `auth` slice no longer holds a token (session is an httpOnly cookie). Bootstrap reads only the theme from `localStorage`; the auth session is re-verified via `/auth/me` every load rather than rehydrated from storage. Replaced the WebSocket real-time channel with a cookie-authenticated SSE stream (`shared/sse/`, `EventSource`, native reconnect). No change to the module map, feature shape, routing guards, or the state-placement decision rule. |

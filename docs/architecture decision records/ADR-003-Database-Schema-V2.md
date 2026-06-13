@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Accepted |
 | **Date** | 11-05-2026 |
-| **Revised** | 18-05-2026 |
+| **Revised** | 10-06-2026 |
 | **Deciders** | Mohammed Siddique, Subham Panda, Dayanand Hukkeri and Aswath Ravi |
 | **Depends on** | ADR-001 |
 | **Supersedes** | ADR-002 (01-05-2026) |
@@ -240,8 +240,18 @@ Authentication and security events only. Append-only.
 | `user_id` | INTEGER | Y | FK → users(user_id). NULL if user not identified (unknown email on failed login) |
 | `auth_provider` | TEXT | Y | `'local'` or `'microsoft'` |
 | `ip_address` | TEXT | Y | For security pattern analysis. May be hashed for privacy compliance |
-| `failure_reason` | TEXT | Y | `'invalid_password'`, `'account_archived'`, `'sso_token_invalid'`, `'sso_tenant_mismatch'`. NULL on success |
+| `failure_reason` | TEXT | Y | `'invalid_password'`, `'account_archived'`, `'sso_token_invalid'`, `'sso_tenant_mismatch'`, `'unknown_user'`. NULL on success |
 | `created_at` | TIMESTAMP | N | UTC |
+
+---
+
+### Sessions (Redis — not a SQL table)
+
+The Backend-for-Frontend authentication model (ADR-004, ADR-006, ADR-011) stores user sessions in **Redis**, not in PostgreSQL. They are deliberately *not* a table in this schema: sessions are short-lived, high-churn, and benefit from Redis-native key TTL for idle expiry, none of which fits the durable relational model this ADR governs. They are documented here only so the schema is not mistaken for the complete persistence picture.
+
+Each session is keyed `session:{session_id}` and holds: the internal `user_id`, the bound CSRF token, an **application-encrypted** cache of the user's Microsoft access and refresh tokens (encrypted before write — Redis is not relied on for at-rest encryption), `created_at`, and `last_seen_at`. A reverse index `user:{user_id}:sessions` (a Redis set) supports revoking all of a user's sessions on archival. Idle expiry (30 minutes) is the key TTL; the absolute cap (8 hours) is checked against `created_at`. The authoritative shape is in `CONTRACT-backend-auth.md`.
+
+The `users` table remains the source of truth for identity and `microsoft_oid` binding; the `auth_logs` table remains the durable audit trail of sign-in and sign-out events. Sessions vanishing from Redis (expiry, eviction, or a restart without AOF) only signs users out — it loses no auditable or business data.
 
 ---
 
@@ -436,13 +446,13 @@ ALTER TABLE error_logs      ADD CONSTRAINT chk_err_severity   CHECK (severity IN
 **Security:**
 - bcrypt cost factor ≥ 12; hash server-side only
 - `password_hash` and `microsoft_oid` never in API responses
-- Validate `tid` claim against `MICROSOFT_TENANT_ID` env var in middleware
-- `error_logs.context` must be sanitised before write — no credentials, tokens, or PII
+- Validate the `tid` claim against `MICROSOFT_TENANT_ID` during the backend code exchange
+- `error_logs.context` must be sanitised before write — no credentials, tokens, or PII; auth `code`/`state` values must never be logged
 - Administrator self-demotion blocked in application logic before DB write
 - App enforces `role_id IN (3, 4)` before inserting into `project_managers`
-- Access JWTs are short-lived and stateless.
-- Authentication middleware validates JWT signature, issuer (`iss`), audience (`aud`), expiry (`exp`), and tenant (`tid`) claims on every request.
-- The backend does not persist or blacklist access JWTs.
+- Sessions are server-side (Redis) and revocable; logout, archival, and admin kill end them immediately. Account `status` is re-checked on every request so a revoked or archived user is rejected on their next request.
+- Archival revokes all of a user's sessions: commit the archive in PostgreSQL, then delete the session keys and the `user:{user_id}:sessions` set in Redis.
+- The Microsoft token cache in each session is encrypted application-side before being written to Redis.
 
 ---
 
@@ -450,8 +460,21 @@ ALTER TABLE error_logs      ADD CONSTRAINT chk_err_severity   CHECK (severity IN
 
 - ADR-001 — Domain Glossary & Access Control Policy (18-05-2026)
 - ADR-002 — Prototype schema (superseded; retain for migration reference)
+- ADR-004 — System Architecture (BFF model, Redis session store)
+- ADR-006 — Authentication Flow (session model, `oid` binding)
+- CONTRACT-backend-auth.md — authoritative session shape and `auth_logs` event mapping
 - Microsoft Identity Platform — OIDC `oid`, `tid` claims
 - bcrypt — Provos & Mazières, 1999 (USENIX)
 - Clockify, Toggl Track, Harvest — role model reference
 - SQLite docs — partial indexes, `PRAGMA foreign_keys`
 - PostgreSQL 14 docs — `TIMESTAMPTZ`, `BIGSERIAL`, partial indexes, `CHECK` constraints
+
+---
+
+## Change Log
+
+| Date | Change |
+|---|---|
+| 11-05-2026 | Initial V2 schema, superseding ADR-002; corrected 17 naming/structural violations, added domain entities and DB-managed RBAC. |
+| 18-05-2026 | Review revision aligning terminology with ADR-001. |
+| 10-06-2026 | BFF authentication revision. Added `'unknown_user'` to the `auth_logs.failure_reason` values. Added a Sessions note documenting that sessions live in Redis (not a SQL table) with an application-encrypted Microsoft token cache, idle-TTL expiry, and a per-user reverse index for revocation. Replaced the stale stateless-JWT security notes with the server-side session model (revocable, per-request `status` recheck, commit-then-revoke on archival). No relational table changes. |

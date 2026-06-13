@@ -93,3 +93,7 @@ def dev_users(db: DBSession) -> list[dict]:
 def dev_login_as(user_id: int, db: DBSession) -> RedirectResponse:
     user = auth_service.get_dev_user_by_id(db, user_id)
     return _start_session_and_redirect(user)    
+
+@router.get("/mode")
+def auth_mode() -> dict:
+    return {"devLogin": auth_service.is_dev_login_enabled()}

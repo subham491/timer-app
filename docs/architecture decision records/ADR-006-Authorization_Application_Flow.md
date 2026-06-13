@@ -4,24 +4,25 @@
 |---|---|
 | **Status** | Proposed |
 | **Date** | 22-05-2026 |
-| **Deciders** | Subham Panda, Mohammed Siddique M and Aswath Ravi |
-| **Related documents** | ADR-004 (System Architecture), ADR-001 (Domain Glossary), ADR-003 (Database Schema) |
+| **Revised** | 10-06-2026 |
+| **Deciders** | Backend + Frontend Team |
+| **Related documents** | ADR-004, ADR-001, ADR-003, ADR-011, CONTRACT-backend-auth.md |
 
 ---
 
 ## Decision
 
-Users sign in with Microsoft (SSO is the only path). Once signed in, the app gets a short-lived session token that it sends with every request. The token lasts thirty minutes; after that, the user signs in again. There is no "remember me forever" — every session is fresh and bounded.
+Users sign in with Microsoft (SSO is the only path). The sign-in itself runs on the backend (a Backend-for-Frontend pattern): the app sends the user to the backend, which handles the exchange with Microsoft and gives the browser a session held in an httpOnly cookie. The cookie is the only thing the browser holds — there is no token in the page. A session lasts up to a full working day but ends after thirty minutes of inactivity; there is no "remember me forever," and a session can be ended instantly at any time.
 
 Users do not self-onboard. An administrator pre-creates the user record in the app before that person can sign in. Microsoft's identity is bound to the record on the user's first successful sign-in.
 
-This ADR covers two related decisions: how users sign in (sections 1–5) and how users come to exist in the system (section 6).
+This ADR covers two related decisions: how users sign in (sections 1–5) and how users come to exist in the system (section 6). Section 6 is unchanged from the original version; sections 1–5 describe the BFF session model. The wire-level detail lives in `CONTRACT-backend-auth.md`.
 
 ---
 
 ## 1. Signing in with Microsoft
 
-This is the primary way users sign in. When the user clicks **Sign in with Soliton**, the app sends them to Microsoft's sign-in page. Microsoft handles passwords, multi-factor authentication, and any company policies. Once Microsoft confirms the user is who they say they are, the user is sent back to our app with proof of identity. The app passes that proof to our backend, which checks it against our user database and returns a session token. The user then sees the dashboard.
+This is the primary way users sign in. When the user clicks **Sign in with Soliton**, the app hands off to our backend, which sends them to Microsoft's sign-in page. Microsoft handles passwords, multi-factor authentication, and any company policies. Once Microsoft confirms the user is who they say they are, Microsoft sends them back to our backend with proof of identity. The backend verifies that proof, checks it against our user database, creates a session, and sends the user's browser to the dashboard with the session cookie set. The user's browser never handles the Microsoft proof or any token directly — the whole exchange happens on the backend.
 
 ![Sign in with Microsoft](../diagrams/sso_login.png)
 
@@ -44,42 +45,43 @@ This is the primary way users sign in. When the user clicks **Sign in with Solit
 
 ## 2. Returning to the app
 
-When a user comes back to the app — closing and reopening the browser, refreshing the page, or clicking a link from email — we don't want to make them sign in again if their session is still valid. The app remembers the session token from last time and asks the backend "is this still valid?" before showing the dashboard.
+When a user comes back to the app — closing and reopening the browser, refreshing the page, or clicking a link from email — we don't want to make them sign in again if their session is still valid. The browser still has the session cookie from last time; on load the app asks the backend "is this session still valid?" before showing the dashboard.
 
 ![Returning User](../diagrams/returning_user.png)
 
 **What the user experiences:**
 
-- If the session is still valid (less than 30 minutes since last sign-in), they go straight to the dashboard with no interruption.
-- If the session has expired or the user's account status changed (e.g. an administrator archived them), they're sent back to the sign-in page.
+- If the session is still valid (active within the last 30 minutes and under its daily cap), they go straight to the dashboard with no interruption.
+- If the session has expired, been revoked, or the user's account status changed (e.g. an administrator archived them), they're sent back to the sign-in page.
 - While the app is checking with the backend (usually well under a second), the user sees a loading screen — never an empty dashboard, never an unnecessary sign-in page.
 
 ---
 
 ## 3. Signing out
 
-When the user clicks **Sign out**, the app immediately clears their session locally and sends them to the sign-in page. In the background, we record the sign-out event for our audit trail.
+When the user clicks **Sign out**, the app tells the backend to end the session, which deletes it on the server and expires the cookie, then sends the user to the sign-in page. The sign-out event is recorded for the audit trail.
 
 ![Sign out](../diagrams/signout.png)
 
 **Two important properties:**
 
-- **Sign-out never makes the user wait.** Even if the network is slow or the backend is busy, the user sees the sign-in page instantly. The audit entry happens in the background and doesn't block the experience.
+- **Sign-out is a true end of the session.** Unlike a token model where signing out only forgets the token locally, here the session is destroyed on the server — it cannot be reused even if the cookie were somehow retained.
 - **The audit trail records every sign-out.** Administrators can see who signed out, from where, and when.
 
 ---
 
-## 4. Session expires after 30 minutes
+## 4. How sessions expire
 
-Sessions are intentionally short — thirty minutes after sign-in, the session expires. The next time the user takes any action that talks to the backend, they're informed their session has expired and sent back to the sign-in page to start fresh.
+A session ends in one of two ways: **thirty minutes of inactivity** (the idle timeout), or **eight hours after sign-in** regardless of activity (the absolute cap), whichever comes first. The next time the user takes any action after the session has ended, they're told their session expired and sent back to the sign-in page to start fresh.
 
-![Session expires](../diagrams/token_expiry.png)
+![Session expires](../diagrams/session_expiry.png)
 
-**Why thirty minutes:**
+**Why these two limits:**
 
-- A short session limits exposure if a user leaves a computer unlocked or if their session token is ever compromised.
+- The **30-minute idle** limit is the security-meaningful one: it bounds exposure if a user leaves a computer unlocked. Walking away ends the session shortly after, with nothing for someone to find.
+- The **8-hour absolute** cap lets a normal working day proceed without a mid-afternoon interruption. The backend silently renews its connection to Microsoft in the background, so an active user is never stopped to re-authenticate within the day.
 - For Microsoft sign-in users, re-signing in usually doesn't require typing a password — Microsoft remembers the recent sign-in and confirms with a single click.
-- This is configurable via the `JWT_TTL_SECONDS` environment variable. If user feedback shows 30 minutes is painful, it can be extended without any architectural changes. The architectural property is "short-lived stateless tokens with no server-side revocation" — the specific duration is operational policy.
+- Both limits are configurable via the `SESSION_IDLE_SECONDS` and `SESSION_ABSOLUTE_SECONDS` environment variables. The architectural property is "revocable server-side sessions with an idle and an absolute bound" — the specific durations are operational policy. Because sessions are revocable at any moment, a longer absolute cap no longer weakens security the way a longer token lifetime would have.
 
 ---
 
@@ -91,11 +93,11 @@ At any given moment, a user's session is in one of three states. Understanding t
 
 | State | What it means |
 |---|---|
-| **Signed out** | No session. The user sees the sign-in page. |
-| **Checking** | The app has a session token but is asking the backend if it's still valid. The user sees a brief loading screen. |
-| **Signed in** | The session is confirmed valid. The user can use the app. |
+| **Signed out** | No valid session. The user sees the sign-in page. |
+| **Checking** | The browser has a session cookie but the app is asking the backend whether it's still valid. The user sees a brief loading screen. |
+| **Signed in** | The backend confirmed the session is valid. The user can use the app. |
 
-The **Checking** state is the reason returning users don't see a flash of the sign-in page when they reload — the app holds the loading screen until it knows for sure whether the session is still good.
+The **Checking** state is the reason returning users don't see a flash of the sign-in page when they reload — the app holds the loading screen until it knows for sure whether the session is still good. Because the session cookie can't be read by the app's own code, every load genuinely asks the backend rather than guessing from what's stored locally.
 
 ---
 
@@ -148,13 +150,16 @@ Archived users are rejected at sign-in with **"This account has been archived"**
 
 | Property | How it's enforced |
 |---|---|
-| Soliton-only access | Identity tokens from any Microsoft tenant other than Soliton's are rejected |
-| Short session windows | Thirty-minute session tokens; no long-lived "remember me" |
+| Soliton-only access | Identity tokens from any Microsoft tenant other than Soliton's are rejected during the backend code exchange |
+| Bounded session windows | 30-minute idle timeout plus 8-hour absolute cap; no long-lived "remember me" |
+| Instant revocation | Sessions live server-side; logout, archival, and admin kill end them immediately rather than waiting for an expiry |
+| No credential in the browser | The session is an httpOnly cookie the page cannot read; the Microsoft tokens and the client secret stay on the backend |
+| CSRF protection | Mutating requests require a session-bound token header; cross-site requests cannot supply it |
 | No self-onboarding | A user must be pre-created by an administrator before they can sign in, even with a valid Soliton Microsoft account |
 | Permanent identity binding | First sign-in binds Microsoft's `oid` to the user record; subsequent lookups use `oid`, not email |
 | Full audit trail | Every sign-in attempt, every sign-out, and every administrative user change is recorded |
 | Sensitive data never leaks to the client | `microsoft_oid` is never returned in any response |
-| Standard libraries handle the hard parts | Microsoft's official authentication library handles the OAuth protocol; we don't write the security-critical code ourselves |
+| Standard libraries handle the hard parts | Microsoft's official server-side library handles the OAuth protocol; we don't write the security-critical code ourselves |
 
 ---
 
@@ -164,14 +169,18 @@ Archived users are rejected at sign-in with **"This account has been archived"**
 
 - **Single source of truth for identity.** Azure AD owns who people are, what their password is, and what MFA they need.
 - **Single source of truth for app access.** Our `users` table owns who is allowed in the timer app and what role they have.
-- **Clean offboarding.** Archiving in the app cuts off access without touching Azure AD.
+- **Clean offboarding.** Archiving in the app cuts off access without touching Azure AD — and now takes effect immediately, because archival revokes the user's live sessions.
+- **No credential in the browser.** No token in page storage; the session cookie can't be read by scripts, and the Microsoft tokens and client secret never leave the backend.
 - **No password storage anywhere in our system.** The bcrypt dependency, the local login form, and the rate-limiting logic are all eliminated.
 
 ### Negative
 
 - **Two-step onboarding.** A new joiner cannot self-serve. If an administrator hasn't pre-created them in the app, their first sign-in attempt fails. In practice this batches naturally with the joiner paperwork process.
-- **No break-glass account.** If Microsoft Entra ID is down, no one can sign in to the timer app, including administrators. This is the trade-off accepted by removing the local fallback path.
+- **No break-glass account.** If Microsoft is down, no one can sign in to the timer app, including administrators. This is the trade-off accepted by removing the local fallback path.
 - **First-administrator bootstrap requires a seed script.** At go-live there is no administrator in the `users` table, so a one-time seed must run before the first sign-in attempt.
+- **A session store must be operated.** Sessions live in Redis, which has to be run, secured, and backed up — the operational price of revocation. It holds encrypted Microsoft tokens, making it a sensitive asset.
+- **CSRF is a managed risk.** Because the browser sends the session cookie automatically, mutating requests are protected with a session-bound token to block cross-site abuse.
+- **Revocation is not atomic with the database.** Archiving a user commits in the database and then revokes sessions; a brief window is closed by re-checking account status on every request.
 
 ### Neutral
 
@@ -191,6 +200,17 @@ Archived users are rejected at sign-in with **"This account has been archived"**
 
 ## Related documents
 
-- **ADR-001— System Architecture.** The overall system this auth flow lives in: client app, backend service, database, and Microsoft as the identity provider.
+- **ADR-004 — System Architecture.** The overall system this auth flow lives in: client app, backend service, database, Redis session store, and Microsoft as the identity provider. Defines the BFF wire model at the architecture level.
 - **ADR-001 — Domain Glossary and Access Control Policy.** Who the users are, what roles exist (User, Report Viewer, Manager, Administrator), and what each role is allowed to do.
 - **ADR-003 — Database Schema.** The tables this flow touches: `users` (account records, including the `microsoft_oid` field that gets bound on first sign-in), `auth_logs` (the sign-in audit trail), `audit_logs` (administrative changes), and the role and permission tables.
+- **ADR-011 — Frontend Authentication Implementation (BFF).** How the frontend consumes this flow: full-page redirect to sign in, session state derived from `/auth/me`, no token handling.
+- **CONTRACT-backend-auth.md.** The wire-level contract — endpoints, cookies, CSRF, session model, and error signaling.
+
+---
+
+## Change Log
+
+| Date | Change |
+|---|---|
+| 22-05-2026 | Initial version: SSO-only sign-in, short-lived session token, admin pre-creation with `oid` binding. |
+| 10-06-2026 | BFF revision. Sections 1–5 rewritten: the backend now owns the OAuth exchange (confidential client); the browser holds only an httpOnly session cookie; sessions are server-side and revocable; expiry is 30-min idle plus 8-hr absolute (replacing the single 30-min token window); sign-out is true revocation. Section 6 (user lifecycle) unchanged. Updated the security summary and consequences; fixed the mislabeled ADR-001/ADR-004 cross-references. |

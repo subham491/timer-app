@@ -1,0 +1,404 @@
+openapi: 3.1.0
+
+info:
+  title: Soliton Timer App — Authentication API (BFF Model)
+  version: 2.0.0
+  description: >
+    Wire contract for authentication under the Backend-for-Frontend (BFF) model.
+    The backend owns the OAuth authorization-code exchange against Microsoft as a
+    confidential client. The browser holds only an httpOnly session cookie
+    (`timer_session`) plus a JS-readable CSRF cookie (`timer_csrf`). There is no
+    Bearer token, no app JWT in any response body, and no token-handling code in
+    the frontend. Sessions are stored in Redis; real-time timer state is delivered
+    over a cookie-authenticated SSE stream.
+
+
+    Companion documents: CONTRACT-backend-auth.md, ADR-011 (Frontend Auth, BFF),
+    ADR-006 (Auth Flow), ADR-001 (Domain/RBAC), ADR-003 (Schema).
+
+servers:
+  - url: /api
+    description: Same-origin API mount behind the reverse proxy. Cross-origin deployment is out of contract.
+
+tags:
+  - name: Authentication
+    description: Sign-in, session verification, and sign-out.
+  - name: Real-time
+    description: Server-to-client timer state stream (SSE).
+
+paths:
+
+  /auth/login:
+    get:
+      tags: [Authentication]
+      operationId: authLogin
+      summary: Begin Microsoft sign-in (browser navigation)
+      description: >
+        Full-page browser navigation, not XHR. Generates OAuth `state` and a PKCE
+        verifier, stores them in a short-lived httpOnly `timer_oauth` cookie, and
+        redirects (302) to Microsoft's authorize endpoint. If the caller already
+        holds a live session, redirects directly to `return_to` (idempotent).
+        Rate-limited per-IP at the application level (light).
+      security: []
+      parameters:
+        - name: return_to
+          in: query
+          required: false
+          description: >
+            SPA path to land on after sign-in. Must be a relative path beginning
+            with `/`; any other value is replaced with `/time-tracker`
+            (open-redirect guard).
+          schema:
+            type: string
+            pattern: '^/.*'
+            example: /time-tracker
+      responses:
+        '302':
+          description: Redirect to Microsoft's authorize endpoint (or directly to `return_to` if already signed in).
+          headers:
+            Location:
+              description: Microsoft authorize URL, or the validated `return_to` path.
+              schema:
+                type: string
+            Set-Cookie:
+              description: Sets the short-lived httpOnly `timer_oauth` cookie holding `state` and the PKCE verifier (10-minute TTL).
+              schema:
+                type: string
+        '429':
+          description: Rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error_code: rate_limited
+                message: Too many sign-in attempts. Please wait and try again.
+
+  /auth/callback:
+    get:
+      tags: [Authentication]
+      operationId: authCallback
+      summary: Microsoft redirect target — completes sign-in (browser navigation)
+      description: >
+        Microsoft's redirect target. Validates `state` against the `timer_oauth`
+        cookie, exchanges the authorization code (client secret + PKCE verifier)
+        for tokens, validates the identity token (signature, `iss`, `aud`, `exp`,
+        and `tid` against MICROSOFT_TENANT_ID), resolves the User per ADR-006 §6
+        (lookup by `microsoft_oid`, else bind on `email` first sign-in), rejects
+        archived accounts, creates the Redis session (with the Microsoft token
+        cache encrypted application-side), and sets the session and CSRF cookies.
+
+
+        On any failure no session cookies are set, an `auth_logs` row is written
+        with the matching `failure_reason`, and the browser is redirected to
+        `/login?error=<code>` (or to `/login` with no param if the user cancelled
+        at Microsoft). Rate-limited per-IP at the application level (stricter than
+        `/auth/login`).
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: false
+          description: Authorization code returned by Microsoft. Absent when Microsoft returns an error.
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: false
+          description: Opaque state value; must match the value stored in the `timer_oauth` cookie.
+          schema:
+            type: string
+        - name: error
+          in: query
+          required: false
+          description: Error code from Microsoft (e.g. `access_denied` when the user cancels).
+          schema:
+            type: string
+      responses:
+        '302':
+          description: >
+            On success, redirect to the validated `return_to` (default
+            `/time-tracker`) with the `timer_session` and `timer_csrf` cookies set.
+            On failure, redirect to `/login?error=<code>` (no cookies set), or to
+            `/login` with no param if the user cancelled at Microsoft.
+          headers:
+            Location:
+              description: The SPA landing path on success, or `/login[?error=<code>]` on failure.
+              schema:
+                type: string
+              examples:
+                success:
+                  value: /time-tracker
+                unknownUser:
+                  value: /login?error=unknown_user
+                archived:
+                  value: /login?error=account_archived
+                tenantMismatch:
+                  value: /login?error=sso_tenant_mismatch
+                tokenInvalid:
+                  value: /login?error=sso_token_invalid
+                stateMismatch:
+                  value: /login?error=oauth_state_mismatch
+                cancelled:
+                  value: /login
+            Set-Cookie:
+              description: >
+                On success, sets `timer_session` (HttpOnly; Secure; SameSite=Lax;
+                Path=/api) and `timer_csrf` (Secure; SameSite=Lax; Path=/), and
+                clears `timer_oauth`. On failure, no session cookies are set.
+              schema:
+                type: string
+        '429':
+          description: Rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error_code: rate_limited
+                message: Too many attempts. Please wait and try again.
+
+  /auth/me:
+    get:
+      tags: [Authentication]
+      operationId: authMe
+      summary: Current authenticated user and scopes
+      description: >
+        Boot-time and on-demand session verification — the frontend's single
+        source of session truth. Resolves the `timer_session` cookie against the
+        Redis session store, confirms the session is live (idle TTL not elapsed,
+        absolute lifetime not exceeded) and the User is active, and returns the
+        User object with the flattened scope list for their role (ADR-001
+        role→scope matrix). GET — no CSRF header required.
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Session is valid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          description: >
+            No cookie, unknown/expired/revoked session, or archived User. A single
+            generic code is returned by design — the client reaction is identical
+            in every case, and distinguishing them would leak session state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error_code: session_invalid
+                message: Your session has expired. Please sign in again.
+
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      operationId: authLogout
+      summary: Sign out (true server-side revocation)
+      description: >
+        Deletes the Redis session key, removes the session id from the User's
+        `user:{user_id}:sessions` reverse index, expires both cookies
+        (`Max-Age=0`), and writes an `auth_logs` (`logout`) row. Idempotent:
+        returns 204 even when the session was already invalid, so logout never
+        fails for the user. Requires the CSRF header (mutating request).
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      responses:
+        '204':
+          description: Logged out (or session already invalid). Cookies expired.
+          headers:
+            Set-Cookie:
+              description: Expires `timer_session` and `timer_csrf` (Max-Age=0).
+              schema:
+                type: string
+        '403':
+          description: CSRF header missing or does not match the session-bound token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error_code: csrf_mismatch
+                message: Request rejected. Please refresh and try again.
+
+  /timer/stream:
+    get:
+      tags: [Real-time]
+      operationId: timerStream
+      summary: Server-Sent Events stream of timer state changes
+      description: >
+        A read-only, server-to-client SSE stream carrying timer state changes
+        (started, stopped, updated, deleted) for the authenticated User across
+        their open tabs and devices. Replaces the previously planned WebSocket
+        channel. Authenticated by the `timer_session` cookie attached
+        automatically on the EventSource GET — no token in the URL, no CSRF header
+        (GET, read-only).
+
+
+        If the session expires or is revoked while the stream is open, the server
+        closes the stream; the client's EventSource fires `onerror`, its reconnect
+        re-validates and receives 401, and the frontend forces sign-out. Each event
+        is a hint to refetch the affected TanStack Query keys, never a trusted
+        payload.
+
+
+        Reverse-proxy note: response buffering must be disabled for this route
+        (`X-Accel-Buffering: no` on nginx, or the Caddy equivalent), otherwise
+        events are buffered and the stream stalls behind the proxy. This endpoint
+        is owned by the timer domain (ADR-010) and is documented here only for its
+        authentication contract.
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: An open `text/event-stream`. Stays open; emits timer events as they occur.
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                const: text/event-stream
+            Cache-Control:
+              schema:
+                type: string
+                const: no-cache
+            X-Accel-Buffering:
+              description: Must be `no` so the reverse proxy does not buffer the stream.
+              schema:
+                type: string
+                const: 'no'
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/TimerStreamEvent'
+        '401':
+          description: Invalid session at connect (or on reconnect after mid-stream revocation).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error_code: session_invalid
+                message: Your session has expired. Please sign in again.
+
+components:
+
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: timer_session
+      description: >
+        Opaque session identifier (≥128-bit random, not a JWT). HttpOnly; Secure;
+        SameSite=Lax; Path=/api. Resolved server-side to the Redis session record.
+        Not readable by JavaScript.
+    csrfHeader:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: >
+        Double-submit CSRF token. Must equal the value of the JS-readable
+        `timer_csrf` cookie. Required on all mutating requests (POST/PUT/PATCH/
+        DELETE); GET requests, including the SSE stream, are exempt.
+
+  schemas:
+
+    User:
+      type: object
+      description: >
+        Public User shape. Field names per ADR-003. `user_id`, `microsoft_oid`,
+        and `password_hash` are never included.
+      additionalProperties: false
+      required: [universal_id, display_name, email, role, status, auth_provider]
+      properties:
+        universal_id:
+          type: string
+          format: uuid
+          description: External identifier (UUID). The internal `user_id` is never exposed.
+          example: 9f1c8e2a-3b7d-4c10-9e21-7a0b5d2f4c88
+        display_name:
+          type: string
+          example: Subham Panda
+        email:
+          type: string
+          format: email
+          example: subham.panda@soliton.com
+        role:
+          type: string
+          enum: [user, report_viewer, manager, administrator]
+          example: administrator
+        status:
+          type: string
+          enum: [active, archived]
+          example: active
+        auth_provider:
+          type: string
+          enum: [microsoft, local]
+          example: microsoft
+
+    MeResponse:
+      type: object
+      additionalProperties: false
+      required: [user, scopes]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        scopes:
+          type: array
+          description: >
+            Flattened permission-scope list for the User's role per the ADR-001
+            role→scope matrix. The frontend gates UX on this array and never on
+            `role`. Enforcement is backend-only.
+          items:
+            type: string
+          example:
+            - time_entries:create_own
+            - time_entries:read_own
+            - time_entries:update_own
+            - time_entries:delete_own
+            - reports:view_own
+            - reports:export_own
+
+    TimerStreamEvent:
+      type: object
+      description: >
+        Shape of a single SSE event payload. The client treats it as a hint and
+        refetches the affected query keys rather than trusting the payload.
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [timer_started, timer_stopped, timer_updated, timer_deleted]
+          example: timer_started
+        time_entry_universal_id:
+          type: string
+          format: uuid
+          description: External id of the affected Time Entry, when applicable.
+          example: 3b7d9f1c-8e2a-4c10-9e21-0b5d2f4c887a
+
+    Error:
+      type: object
+      description: Standard error envelope (ADR-004) for all JSON 4xx/5xx responses.
+      additionalProperties: false
+      required: [error_code, message]
+      properties:
+        error_code:
+          type: string
+          description: Machine-readable code the frontend maps to UI without parsing free text.
+          enum:
+            - session_invalid
+            - csrf_mismatch
+            - unknown_user
+            - account_archived
+            - sso_tenant_mismatch
+            - sso_token_invalid
+            - oauth_state_mismatch
+            - rate_limited
+          example: session_invalid
+        message:
+          type: string
+          description: Human-readable text. Not intended for programmatic matching.
+          example: Your session has expired. Please sign in again.
