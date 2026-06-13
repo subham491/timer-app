@@ -1,0 +1,589 @@
+openapi: 3.1.0
+info:
+  title: Projects Module Contract
+  version: 0.3.0
+  description: >
+    API-first contract for the Projects module.
+    The contract supports project-first creation, optional inline task creation,
+    and task-gated timer readiness for enterprise project administration workflows.
+
+servers:
+  - url: /api/v1
+
+tags:
+  - name: Projects
+    description: >
+      Core project lifecycle operations.
+      Needed so users can view, create, update, archive, and restore projects from one module.
+  - name: Project Lookups
+    description: >
+      Lookup data for project forms and filters.
+      Needed so users can complete forms quickly with valid selectable values.
+
+paths:
+  /projects:
+    get:
+      tags: [Projects]
+      summary: List projects
+      description: >
+        Returns paginated projects with search, filter, and sorting support.
+        Needed because users must locate relevant projects quickly in large datasets.
+      operationId: listProjects
+      parameters:
+        - in: query
+          name: search
+          schema:
+            type: string
+          description: >
+            Search by project name.
+            Helpful because users often remember a keyword before they remember exact status or manager mapping.
+        - in: query
+          name: status
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/ProjectStatus'
+          style: form
+          explode: true
+          description: >
+            Filter by one or more project statuses.
+            Helpful because users frequently separate active work from archived work.
+        - in: query
+          name: projectManagerId
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+          description: >
+            Filter by one or more project managers.
+            Helpful because managers and administrators commonly review projects by managerial responsibility.
+        - in: query
+          name: sortBy
+          schema:
+            type: string
+            enum: [name, status, updatedAt, createdAt]
+            default: updatedAt
+          description: >
+            Select the main ordering rule.
+            Helpful because users often want to see most recently changed or alphabetically ordered projects.
+        - in: query
+          name: sortOrder
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: >
+            Sort direction.
+            Helpful because users may need newest-first or oldest-first depending on review context.
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: >
+            Requested result page.
+            Needed for scalable list handling.
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: >
+            Number of projects per page.
+            Helpful because teams can balance visibility and performance.
+      responses:
+        '200':
+          description: >
+            Paginated project list.
+            Helps the frontend render a fast and structured list view.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectListResponse'
+
+    post:
+      tags: [Projects]
+      summary: Create project
+      description: >
+        Creates a project with optional assignments,
+        optional managerial ownership mappings, and optional inline task creation.
+        Supports project-first setup even when execution tasks are not finalized yet.
+      operationId: createProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          description: Newly created project detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectDetail'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /projects/{projectId}:
+    get:
+      tags: [Projects]
+      summary: Get project detail
+      description: >
+        Returns one project with assignments, project managers, and tasks.
+        Required for the edit flow, inspection flow, and timer-readiness visibility.
+      operationId: getProject
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: Project detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectDetail'
+        '404':
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    patch:
+      tags: [Projects]
+      summary: Update project
+      description: >
+        Updates one or more project fields.
+        Supports incremental project maintenance without recreating records.
+      operationId: updateProject
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectRequest'
+      responses:
+        '200':
+          description: Updated project detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectDetail'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /projects/{projectId}/archive:
+    post:
+      tags: [Projects]
+      summary: Archive project
+      description: >
+        Marks a project as archived instead of deleting it.
+        Needed because enterprise users usually need lifecycle control without losing historical references.
+      operationId: archiveProject
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: Archived project detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectDetail'
+        '404':
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /projects/{projectId}/restore:
+    post:
+      tags: [Projects]
+      summary: Restore archived project
+      description: >
+        Restores an archived project to active use.
+        Helpful because users can reactivate paused or returning work without rebuilding the project.
+      operationId: restoreProject
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: Restored project detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectDetail'
+        '404':
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /projects/lookups:
+    get:
+      tags: [Project Lookups]
+      summary: Get project form lookups
+      description: >
+        Returns valid values for assignable users, project managers, and statuses.
+        Prevents frontend hardcoding and supports fast, valid form completion.
+      operationId: getProjectLookups
+      responses:
+        '200':
+          description: Lookup values used by forms and filters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectLookupsResponse'
+
+  /projects/{projectId}/tasks:
+    get:
+      tags: [Projects]
+      summary: List tasks assigned to a project
+      description: >
+        Returns tasks linked to a project.
+        This relationship defines execution scope and determines timer eligibility.
+      operationId: listProjectTasks
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: Project tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectTask'
+
+components:
+  parameters:
+    ProjectId:
+      in: path
+      name: projectId
+      required: true
+      schema:
+        type: string
+      description: >
+        Stable project identifier.
+        Needed so the frontend can safely target one project for detail, update, archive, or restore actions.
+
+  schemas:
+    ProjectStatus:
+      type: string
+      description: >
+        Lifecycle state of the project.
+        Helpful because users need to distinguish usable work from archived work.
+      enum:
+        - active
+        - archived
+
+    UserReference:
+      type: object
+      description: >
+        Lightweight user object for assignment and project-manager displays.
+        Helpful because the frontend often needs display-ready user information without loading full user profiles.
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+
+    ProjectTask:
+      type: object
+      description: >
+        Task linked to a project.
+        Helpful because users need to see what execution units belong to the project.
+        Timers may only be created against valid project-linked tasks.
+      required: [id, name, status]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, archived]
+
+    InlineProjectTaskCreate:
+      type: object
+      description: >
+        Inline task definition used during project creation or update.
+        Needed because users may know the task structure while creating the project
+        and should not be forced into a separate task creation flow.
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 120
+        description:
+          type: string
+          maxLength: 2000
+
+    ProjectSummary:
+      type: object
+      description: >
+        Compact project representation for list pages.
+        Optimized for fast rendering while retaining the fields required for project decisions.
+        A project may exist without tasks, but such a project is not timer-operational.
+      required:
+        - id
+        - name
+        - status
+        - updatedAt
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          description: Helpful as the main project label users recognize.
+        description:
+          type: string
+          nullable: true
+          description: Helpful when users need additional business context.
+        status:
+          $ref: '#/components/schemas/ProjectStatus'
+        assignmentCount:
+          type: integer
+          description: Helpful because users can understand how many users currently have time-logging access.
+        projectManagerCount:
+          type: integer
+          description: Helpful because users can understand how many active managerial owners the project has.
+        taskCount:
+          type: integer
+          description: Helpful because users can estimate delivery scope quickly.
+        activeTimerCount:
+          type: integer
+          description: Helpful because users can see whether work is actively happening.
+        isTimerReady:
+          type: boolean
+          description: >
+            Indicates whether the project can participate in timer workflows.
+            Helpful because the frontend can clearly show if the user can start tracking time.
+        updatedAt:
+          type: string
+          format: date-time
+          description: Helpful for spotting recent change activity.
+        createdAt:
+          type: string
+          format: date-time
+
+    ProjectDetail:
+      allOf:
+        - $ref: '#/components/schemas/ProjectSummary'
+        - type: object
+          description: >
+            Expanded project representation for edit and detail views.
+            Needed because the user must see assignment and task data in one place.
+            If the task list is empty, the project exists administratively but is not ready for timer workflows.
+          required:
+            - assignments
+            - projectManagers
+            - tasks
+          properties:
+            assignments:
+              type: array
+              items:
+                $ref: '#/components/schemas/UserReference'
+            projectManagers:
+              type: array
+              items:
+                $ref: '#/components/schemas/UserReference'
+            tasks:
+              type: array
+              items:
+                $ref: '#/components/schemas/ProjectTask'
+            timerReadinessReason:
+              type: string
+              nullable: true
+              description: >
+                Optional explanation when the project is not timer-ready.
+                Example: "Add at least one active task to enable timers."
+
+    CreateProjectRequest:
+      type: object
+      description: >
+        Request payload for project creation.
+        Supports one-step submission with optional assignments,
+        optional project-manager mappings, and optional inline task creation.
+      required:
+        - name
+        - status
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 120
+        description:
+          type: string
+          maxLength: 2000
+        status:
+          $ref: '#/components/schemas/ProjectStatus'
+        assignmentUserIds:
+          type: array
+          items:
+            type: string
+          description: >
+            Optional user assignments at creation time.
+            Helpful because teams may want to grant time-logging access immediately.
+        projectManagerUserIds:
+          type: array
+          items:
+            type: string
+          description: >
+            Optional project manager assignments at creation time.
+            Helpful because managerial ownership may be known when the project is first created.
+        taskCreates:
+          type: array
+          items:
+            $ref: '#/components/schemas/InlineProjectTaskCreate'
+          description: >
+            Optional inline task creation payload.
+            Helpful because users may want to create operational tasks within the same project creation flow.
+
+    UpdateProjectRequest:
+      type: object
+      description: >
+        Partial update payload for project maintenance.
+        Supports incremental editing where users change only the fields they need.
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 120
+        description:
+          type: string
+          maxLength: 2000
+        status:
+          $ref: '#/components/schemas/ProjectStatus'
+        assignmentUserIds:
+          type: array
+          items:
+            type: string
+          description: >
+            Full replacement or managed update list for active project assignments, depending on backend implementation choice.
+        projectManagerUserIds:
+          type: array
+          items:
+            type: string
+          description: >
+            Full replacement or managed update list for active project managers, depending on backend implementation choice.
+        taskCreates:
+          type: array
+          items:
+            $ref: '#/components/schemas/InlineProjectTaskCreate'
+          description: >
+            Optional inline tasks to create while updating the project.
+            Helpful when project setup becomes operational later in its lifecycle.
+
+    ProjectListResponse:
+      type: object
+      description: >
+        Paginated response for project lists.
+        Needed because enterprise users work with datasets too large for unbounded loading.
+      required: [items, page, pageSize, totalItems, totalPages]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectSummary'
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        totalItems:
+          type: integer
+        totalPages:
+          type: integer
+
+    ProjectLookupsResponse:
+      type: object
+      description: >
+        Lookup payload for project forms and filters.
+        Allows the frontend to render valid dropdowns with a single request.
+      required: [assignableUsers, projectManagers, statuses]
+      properties:
+        assignableUsers:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserReference'
+        projectManagers:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserReference'
+        statuses:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectStatus'
+
+    ErrorResponse:
+      type: object
+      description: >
+        Standard API error shape.
+        Helpful because the frontend can show consistent error feedback to the user.
+      required: [detail]
+      properties:
+        detail:
+          type: string
+
+x-notes:
+  projectCreationWorkflow:
+    summary: Project-first creation with optional task setup
+    whyNeeded: >
+      Projects may exist before operational tasks are fully defined.
+    userBenefit: >
+      Users can create projects early without abandoning the flow due to incomplete task planning.
+    supportedFlows:
+      - create project only
+      - create project with assignments
+      - create project with project managers
+      - create project with inline task creation
+      - create project with assignments and tasks
+
+  timerAlignment:
+    summary: Timers operate only against tasks
+    whyNeeded: >
+      Tasks are the operational execution unit for time tracking.
+    userBenefit: >
+      Time tracking remains structured and attributable.
+    rule: >
+      Projects without tasks are not yet eligible for timer workflows.
+    enforcement:
+      frontend:
+        - timer start requires task selection
+        - projects with no active tasks should be hidden or disabled in timer flows
+      backend:
+        - reject timer creation if taskId is missing
+        - reject timer creation if taskId is not linked to the selected project
+        - reject timer creation if the task is archived or otherwise not timer-eligible

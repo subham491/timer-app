@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Projects Module Contract Swagger UI</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css"
+    />
+    <style>
+      :root {
+        --bg: #f4f7fb;
+        --panel: #ffffff;
+        --ink: #162033;
+        --muted: #5f6b84;
+        --brand: #0f62fe;
+        --brand-soft: #e8f0ff;
+        --success: #1f8f5f;
+        --warning: #c77d00;
+        --border: #d9e2f2;
+        --shadow: 0 18px 50px rgba(18, 35, 68, 0.08);
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background:
+          radial-gradient(circle at top left, rgba(15, 98, 254, 0.12), transparent 28%),
+          linear-gradient(180deg, #f7faff 0%, var(--bg) 100%);
+        color: var(--ink);
+      }
+
+      body {
+        font-family: "Segoe UI", Arial, sans-serif;
+      }
+
+      .topbar {
+        display: none;
+      }
+
+      .swagger-ui .information-container {
+        padding: 28px 0 8px;
+      }
+
+      .swagger-ui .info {
+        margin: 0 auto 24px;
+        padding: 28px 30px;
+        max-width: 1240px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        box-shadow: var(--shadow);
+      }
+
+      .swagger-ui .info .title {
+        color: var(--ink);
+        font-size: 34px;
+        font-weight: 700;
+      }
+
+      .swagger-ui .scheme-container {
+        background: transparent;
+        box-shadow: none;
+        padding: 0 0 16px;
+      }
+
+      .swagger-ui .opblock-tag {
+        margin: 0 auto;
+        max-width: 1240px;
+        border-bottom: 1px solid var(--border);
+        color: var(--ink);
+      }
+
+      .swagger-ui .opblock-tag:hover {
+        background: rgba(15, 98, 254, 0.04);
+      }
+
+      .swagger-ui .opblock {
+        margin: 0 auto 18px;
+        max-width: 1240px;
+        border-radius: 18px;
+        overflow: hidden;
+        border-width: 1px;
+        box-shadow: var(--shadow);
+      }
+
+      .swagger-ui .opblock .opblock-summary {
+        align-items: center;
+      }
+
+      .swagger-ui .opblock.opblock-get {
+        border-color: #84c7ff;
+        background: linear-gradient(180deg, rgba(97, 189, 255, 0.12), rgba(97, 189, 255, 0.05));
+      }
+
+      .swagger-ui .opblock.opblock-post {
+        border-color: #8bd8b0;
+        background: linear-gradient(180deg, rgba(31, 143, 95, 0.12), rgba(31, 143, 95, 0.05));
+      }
+
+      .swagger-ui .opblock.opblock-patch {
+        border-color: #ffd27d;
+        background: linear-gradient(180deg, rgba(199, 125, 0, 0.12), rgba(199, 125, 0, 0.05));
+      }
+
+      .swagger-ui .btn.execute {
+        background: var(--brand);
+        border-color: var(--brand);
+      }
+
+      .swagger-ui .btn.authorize {
+        border-color: var(--brand);
+        color: var(--brand);
+      }
+
+      .swagger-ui select,
+      .swagger-ui input[type="text"],
+      .swagger-ui textarea {
+        border-radius: 10px;
+        border-color: var(--border);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+
+    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-standalone-preset.js"></script>
+    <script>
+      window.onload = () => {
+        window.ui = SwaggerUIBundle({
+          url: "./projects-module.contract.yml",
+          dom_id: "#swagger-ui",
+          deepLinking: true,
+          presets: [
+            SwaggerUIBundle.presets.apis,
+            SwaggerUIStandalonePreset,
+          ],
+          layout: "StandaloneLayout",
+        });
+      };
+    </script>
+  </body>
+</html>

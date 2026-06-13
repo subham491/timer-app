@@ -1,0 +1,856 @@
+openapi: 3.1.0
+info:
+  title: Timer Module Contract
+  version: 0.2.0
+  description: >
+    API-first contract for the Timer module.
+    This contract defines live timer workflow, manual time entry workflow,
+    current timer context, historical time entry operations, and the task-based
+    eligibility rules required for reliable enterprise time tracking.
+
+servers:
+  - url: /api/v1
+
+tags:
+  - name: Timer Context
+    description: >
+      Endpoints that provide current running state and timer-ready work options.
+      Needed so the frontend can present only valid timer actions with fewer wasted clicks.
+  - name: Timer
+    description: >
+      Live timer actions.
+      Needed so users can start and stop active work quickly while the backend enforces one-running-timer rules.
+  - name: Time Entries
+    description: >
+      Historical, manual, editable, and deletable time-entry operations.
+      Needed so users can review and correct time after live tracking or when live tracking was missed.
+  - name: Timer Realtime
+    description: >
+      Real-time timer state synchronization for the authenticated user's active sessions.
+      Needed so timer changes started on one tab or device are reflected on other tabs and devices quickly.
+
+paths:
+  /timer/context:
+    get:
+      tags: [Timer Context]
+      summary: Get timer context
+      description: >
+        Returns the caller's current running timer, timer-ready projects,
+        timer-ready tasks, and basic workflow capabilities.
+        This endpoint exists so the frontend does not need to infer timer eligibility
+        from unrelated project or task endpoints.
+      operationId: getTimerContext
+      responses:
+        '200':
+          description: >
+            Timer context for the authenticated user.
+            Helps the frontend render valid timer choices and current state immediately.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimerContextResponse'
+
+  /timer/current:
+    get:
+      tags: [Timer]
+      summary: Get current running timer
+      description: >
+        Returns the user's current running timer if one exists.
+        Helpful when the page needs a lightweight refresh of only the active timer state.
+      operationId: getCurrentTimer
+      responses:
+        '200':
+          description: Current running timer state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentTimerResponse'
+
+  /timer/ws:
+    get:
+      tags: [Timer Realtime]
+      summary: Establish timer realtime stream
+      description: >
+        Upgrades to a WebSocket connection for timer state synchronization.
+        This stream is intended to push start, stop, update, and delete events for the authenticated user's timer state
+        across active tabs and devices.
+      operationId: connectTimerRealtimeStream
+      responses:
+        '101':
+          description: >
+            WebSocket protocol upgrade successful.
+            The client begins receiving timer realtime events for the authenticated user's sessions.
+
+  /timer/start:
+    post:
+      tags: [Timer]
+      summary: Start timer
+      description: >
+        Starts a running timer against a valid active task in a timer-ready project.
+        If the product policy remains auto-stop, any existing running timer for the same user
+        is stopped in the same transaction before the new timer starts.
+      operationId: startTimer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartTimerRequest'
+      responses:
+        '201':
+          description: >
+            Running timer created successfully.
+            Returns the new running time entry so the frontend can update the UI immediately.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeEntryDetail'
+        '400':
+          description: >
+            Validation or business-rule error.
+            Example cases include missing task, task-project mismatch, archived task,
+            inaccessible project, or other timer-eligibility failures.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >
+            Conflict error when timer state cannot be transitioned safely under current policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /timer/stop:
+    post:
+      tags: [Timer]
+      summary: Stop current timer
+      description: >
+        Stops the user's current running timer and finalizes duration server-side.
+        Needed so live work becomes a complete historical time entry.
+      operationId: stopTimer
+      responses:
+        '200':
+          description: >
+            Current timer stopped successfully.
+            Returns the completed time entry for immediate review.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeEntryDetail'
+        '404':
+          description: >
+            No running timer exists for the current user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /time-entries:
+    get:
+      tags: [Time Entries]
+      summary: List time entries
+      description: >
+        Returns paginated time entries for the requested filter set.
+        Needed because users must review recent work, search notes, and narrow the list
+        by project, task, source, and date range.
+      operationId: listTimeEntries
+      parameters:
+        - in: query
+          name: search
+          schema:
+            type: string
+          description: >
+            Search by work note text.
+            Helpful because users often remember note fragments before exact timestamps.
+        - in: query
+          name: dateFrom
+          schema:
+            type: string
+            format: date
+          description: >
+            Inclusive lower bound for the requested work date range.
+        - in: query
+          name: dateTo
+          schema:
+            type: string
+            format: date
+          description: >
+            Inclusive upper bound for the requested work date range.
+        - in: query
+          name: projectId
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+          description: >
+            Filter by one or more projects.
+            Helpful because teams often review time by project scope.
+        - in: query
+          name: taskId
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+          description: >
+            Filter by one or more tasks.
+            Helpful because execution-level review often happens at task granularity.
+        - in: query
+          name: source
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/TimeEntrySource'
+          style: form
+          explode: true
+          description: >
+            Filter by timer or manual source.
+            Helpful because teams sometimes audit live-tracked versus backfilled work separately.
+        - in: query
+          name: status
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/TimeEntryStatus'
+          style: form
+          explode: true
+          description: >
+            Filter by running or stopped entry state.
+        - in: query
+          name: groupBy
+          schema:
+            type: string
+            enum: [none, task, date]
+            default: none
+          description: >
+            Optional grouping mode for historical review.
+            Helpful because users may want to review entries chronologically or grouped by the same task.
+        - in: query
+          name: sortBy
+          schema:
+            type: string
+            enum: [startAt, endAt, durationSeconds, updatedAt, createdAt]
+            default: startAt
+          description: >
+            Primary sort field for the entry list.
+        - in: query
+          name: sortOrder
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: >
+            Sort direction for the entry list.
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Requested result page.
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Requested page size.
+      responses:
+        '200':
+          description: Paginated time-entry list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeEntryListResponse'
+
+  /time-entries/manual:
+    post:
+      tags: [Time Entries]
+      summary: Create manual time entry
+      description: >
+        Creates a stopped manual time entry against a valid active task using explicit start and end timestamps.
+        Needed so missed or offline work can still be captured while preserving the same task-based rules.
+      operationId: createManualTimeEntry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateManualTimeEntryRequest'
+      responses:
+        '201':
+          description: Manual time entry created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeEntryDetail'
+        '400':
+          description: Validation or business-rule error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict with current timer state or overlapping business-rule constraints
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /time-entries/{timeEntryId}:
+    get:
+      tags: [Time Entries]
+      summary: Get time entry detail
+      description: >
+        Returns one time entry with all detail fields needed for review or edit.
+      operationId: getTimeEntry
+      parameters:
+        - $ref: '#/components/parameters/TimeEntryId'
+      responses:
+        '200':
+          description: Time-entry detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeEntryDetail'
+        '404':
+          description: Time entry not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    patch:
+      tags: [Time Entries]
+      summary: Update stopped time entry
+      description: >
+        Updates an eligible stopped time entry and recalculates duration server-side.
+        Needed because users sometimes need to correct task selection, work note, or timestamps.
+      operationId: updateTimeEntry
+      parameters:
+        - $ref: '#/components/parameters/TimeEntryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTimeEntryRequest'
+      responses:
+        '200':
+          description: Updated time entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeEntryDetail'
+        '400':
+          description: Validation or business-rule error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Time entry not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >
+            Conflict because the entry is currently running or cannot be modified under current rules.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags: [Time Entries]
+      summary: Delete time entry
+      description: >
+        Deletes an eligible stopped time entry according to permission and workflow rules.
+        Needed so mistaken historical records can be removed intentionally when policy allows it.
+      operationId: deleteTimeEntry
+      parameters:
+        - $ref: '#/components/parameters/TimeEntryId'
+      responses:
+        '204':
+          description: Time entry deleted successfully
+        '404':
+          description: Time entry not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >
+            Conflict because the entry is running, locked, or otherwise not deletable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  parameters:
+    TimeEntryId:
+      in: path
+      name: timeEntryId
+      required: true
+      schema:
+        type: string
+      description: >
+        Stable time-entry identifier.
+        Needed so the frontend can safely target one entry for review, update, or deletion.
+
+  schemas:
+    TimeEntrySource:
+      type: string
+      description: >
+        Origin of the time entry.
+        Helpful because users and administrators often distinguish live-tracked work from manual backfill.
+      enum:
+        - timer
+        - manual
+
+    TimeEntryStatus:
+      type: string
+      description: >
+        Current lifecycle state of the time entry.
+        Helpful because the UI and API rules differ for running versus stopped entries.
+      enum:
+        - running
+        - stopped
+
+    UserReference:
+      type: object
+      description: >
+        Lightweight user shape used in timer responses.
+        Helpful because the frontend often needs display-ready identity information without a separate user lookup.
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+
+    ProjectReference:
+      type: object
+      description: >
+        Lightweight project object used inside timer responses.
+        Helpful because the frontend must show where the work belongs and whether the project is timer-ready.
+      required: [id, name, status, isTimerReady]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        code:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [active, archived]
+        isTimerReady:
+          type: boolean
+        timerReadinessReason:
+          type: string
+          nullable: true
+
+    TaskReference:
+      type: object
+      description: >
+        Lightweight task object used inside timer responses.
+        Helpful because every timer action must resolve to a valid execution unit.
+      required: [id, name, projectId, status]
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, archived]
+
+    TimeEntrySummary:
+      type: object
+      description: >
+        Compact time-entry representation for list and overview use cases.
+        Designed to support review, filtering, and light editing workflows.
+      required:
+        - id
+        - source
+        - status
+        - startAt
+        - project
+        - task
+        - user
+      properties:
+        id:
+          type: string
+        source:
+          $ref: '#/components/schemas/TimeEntrySource'
+        status:
+          $ref: '#/components/schemas/TimeEntryStatus'
+        workNote:
+          type: string
+          nullable: true
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+          nullable: true
+        durationSeconds:
+          type: integer
+          nullable: true
+          description: >
+            Server-computed duration in seconds.
+            Null is allowed only while the timer is running and the final duration has not been persisted yet.
+        durationDisplay:
+          type: string
+          nullable: true
+          description: >
+            Human-readable duration supplied for display convenience.
+        isBillable:
+          type: boolean
+          description: >
+            Indicates whether the entry counts as billable work under product rules.
+        project:
+          $ref: '#/components/schemas/ProjectReference'
+        task:
+          $ref: '#/components/schemas/TaskReference'
+        user:
+          $ref: '#/components/schemas/UserReference'
+
+    TimeEntryDetail:
+      allOf:
+        - $ref: '#/components/schemas/TimeEntrySummary'
+        - type: object
+          description: >
+            Expanded time-entry representation for review and edit workflows.
+          properties:
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
+            canEdit:
+              type: boolean
+              description: >
+                Indicates whether the current actor may edit this entry.
+            canDelete:
+              type: boolean
+              description: >
+                Indicates whether the current actor may delete this entry.
+
+    CurrentTimerResponse:
+      type: object
+      description: >
+        Lightweight response for the current running timer endpoint.
+      required: [runningEntry]
+      properties:
+        runningEntry:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/TimeEntryDetail'
+
+    TimerReadyProject:
+      type: object
+      description: >
+        Timer-ready project and its eligible tasks.
+        Helpful because the timer UI typically needs to show project-first selection
+        while ensuring only valid tasks are available next.
+      required: [project, tasks]
+      properties:
+        project:
+          $ref: '#/components/schemas/ProjectReference'
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskReference'
+
+    TimerCapabilities:
+      type: object
+      description: >
+        Simple capability flags returned with timer context.
+        Helpful because the frontend can adapt the UI without hardcoding role assumptions.
+      required: [canStartTimer, canCreateManualEntry]
+      properties:
+        canStartTimer:
+          type: boolean
+        canCreateManualEntry:
+          type: boolean
+        canEditStoppedEntries:
+          type: boolean
+        canDeleteStoppedEntries:
+          type: boolean
+        canUseRealtimeSync:
+          type: boolean
+
+    TimerContextResponse:
+      type: object
+      description: >
+        Aggregated timer context for the authenticated user.
+        Designed to reduce initial frontend round-trips and avoid local rule inference.
+      required: [runningEntry, timerReadyProjects, capabilities]
+      properties:
+        runningEntry:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/TimeEntryDetail'
+        timerReadyProjects:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimerReadyProject'
+        capabilities:
+          $ref: '#/components/schemas/TimerCapabilities'
+        realtime:
+          $ref: '#/components/schemas/TimerRealtimeMetadata'
+
+    StartTimerRequest:
+      type: object
+      description: >
+        Request payload for starting a live timer.
+        Both projectId and taskId are required so the backend can validate relationship correctness explicitly.
+      required: [projectId, taskId]
+      properties:
+        projectId:
+          type: string
+        taskId:
+          type: string
+        workNote:
+          type: string
+          maxLength: 2000
+        isBillable:
+          type: boolean
+          default: false
+
+    CreateManualTimeEntryRequest:
+      type: object
+      description: >
+        Request payload for creating a stopped manual time entry.
+        Needed when work was not captured through live timing but still must follow the same task-based rules.
+      required: [projectId, taskId, startAt, endAt]
+      properties:
+        projectId:
+          type: string
+        taskId:
+          type: string
+        workNote:
+          type: string
+          maxLength: 2000
+        isBillable:
+          type: boolean
+          default: false
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+
+    UpdateTimeEntryRequest:
+      type: object
+      description: >
+        Partial update payload for an eligible stopped time entry.
+        Supports correction workflows without forcing full record replacement.
+      minProperties: 1
+      properties:
+        projectId:
+          type: string
+          description: >
+            Optional project change.
+            If supplied, taskId must still resolve to a task that belongs to this project.
+        taskId:
+          type: string
+        workNote:
+          type: string
+          maxLength: 2000
+        isBillable:
+          type: boolean
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+
+    TimeEntryListResponse:
+      type: object
+      description: >
+        Paginated time-entry response.
+        Needed because enterprise users may review large time histories and require scalable loading.
+      required: [items, page, pageSize, totalItems, totalPages, groupBy]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimeEntrySummary'
+        groupBy:
+          type: string
+          enum: [none, task, date]
+          description: >
+            Echoes the effective grouping mode used by the backend.
+        groups:
+          type: array
+          nullable: true
+          description: >
+            Optional grouped representation of the same result set.
+            Helpful when the UI needs grouped review without rebuilding grouping logic locally.
+          items:
+            $ref: '#/components/schemas/TimeEntryGroup'
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        totalItems:
+          type: integer
+        totalPages:
+          type: integer
+
+    TimeEntryGroup:
+      type: object
+      description: >
+        Grouped view of time entries for higher-level historical review.
+        Useful when the user wants to review repeated work by the same task or by date bucket.
+      required: [groupKey, groupLabel, totalDurationSeconds, items]
+      properties:
+        groupKey:
+          type: string
+        groupLabel:
+          type: string
+        task:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/TaskReference'
+        project:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ProjectReference'
+        totalDurationSeconds:
+          type: integer
+        itemCount:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimeEntrySummary'
+
+    TimerRealtimeMetadata:
+      type: object
+      description: >
+        Realtime connection metadata for timer synchronization.
+        Helpful because the frontend can establish one consistent WebSocket connection without hardcoded assumptions.
+      properties:
+        transport:
+          type: string
+          enum: [websocket]
+        endpoint:
+          type: string
+          example: /api/v1/timer/ws
+        supportedEvents:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimerRealtimeEventType'
+
+    TimerRealtimeEventType:
+      type: string
+      description: >
+        Event types emitted over the timer realtime channel.
+      enum:
+        - timer.started
+        - timer.stopped
+        - time-entry.created
+        - time-entry.updated
+        - time-entry.deleted
+        - timer.context.invalidated
+
+    ErrorResponse:
+      type: object
+      description: >
+        Standard API error shape.
+        Helpful because the frontend can present validation and business-rule errors consistently.
+      required: [detail]
+      properties:
+        detail:
+          type: string
+        code:
+          type: string
+          nullable: true
+          description: >
+            Optional stable machine-readable error code for frontend branching when needed.
+
+x-notes:
+  timerRules:
+    summary: Task-based timer workflow with one running timer per user
+    whyNeeded: >
+      Time must be tracked against valid executable work, and active timer state must remain unambiguous.
+    userBenefit: >
+      Users get clearer timer behavior, cleaner history, and more trustworthy reporting.
+    rules:
+      - timer creation without task is not allowed
+      - task must belong to selected project
+      - project and task must both be timer-eligible
+      - user must have access to the selected work
+      - only one running timer may exist per user
+
+  durationComputation:
+    summary: Duration is always server-computed
+    whyNeeded: >
+      Client clocks and browser execution are not reliable enough to own persisted duration.
+    userBenefit: >
+      Users see consistent totals across timer widgets, historical entries, and reports.
+    enforcement:
+      - durationSeconds is never accepted as authoritative client input
+      - create, stop, and update operations recompute duration server-side
+
+  manualEntryRules:
+    summary: Manual time remains supported without weakening data quality
+    whyNeeded: >
+      Enterprise users cannot always track every piece of work live.
+    userBenefit: >
+      Missed work can still be recorded while preserving the same task-based validation rules.
+    rules:
+      - manual entry still requires projectId and taskId
+      - endAt must be greater than startAt
+      - manual entry must pass the same access and eligibility checks as live timer creation
+
+  billableTracking:
+    summary: Time entries include a billable flag for billing-aware reporting
+    whyNeeded: >
+      Teams may need to distinguish billable from non-billable time at the recorded work-entry level.
+    userBenefit: >
+      Billing-aware timesheets and reports can be produced without asking users to remember this context later.
+    note: >
+      This requirement goes beyond the currently accepted ADR-003 schema and should be formalized through a future schema-extension ADR before persistence implementation.
+
+  groupedHistory:
+    summary: Historical entries can be grouped by task
+    whyNeeded: >
+      Users often review repeated work by recurring task rather than only by raw chronology.
+    userBenefit: >
+      Task-level grouping makes audit, review, and correction faster for recurring work.
+    rules:
+      - list endpoint supports groupBy with task grouping
+      - grouped results still preserve individual entry detail
+
+  realtimeSync:
+    summary: Timer state is synchronized across tabs and devices using WebSocket
+    whyNeeded: >
+      The same user may keep the timer open in multiple tabs, windows, or devices during a workday.
+    userBenefit: >
+      Starting or stopping work in one session becomes visible in other active sessions quickly, reducing stale state.
+    rules:
+      - WebSocket pushes timer and time-entry change events to the same user's active sessions
+      - HTTP remains the command surface; WebSocket remains the synchronization surface
