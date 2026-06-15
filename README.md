@@ -1,2 +1,2 @@
-# timer-app
+# watcher
 
